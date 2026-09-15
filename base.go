@@ -35,6 +35,11 @@ type Namer interface {
 // the [ErrCoder] interface, the resulting error response will use the code
 // reported by its ErrCode method.
 //
+// A result of type [json.RawMessage] is sent to the client verbatim, without
+// re-encoding, so that a handler can serve pre-rendered JSON. The handler is
+// responsible for ensuring such a value is valid JSON. A nil RawMessage is
+// sent as null.
+//
 // The context passed to the handler by a [Server] includes two special values
 // that the handler may extract.
 //

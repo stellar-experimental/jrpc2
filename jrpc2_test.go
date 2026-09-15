@@ -1329,3 +1329,115 @@ func TestClient_IsStopped(t *testing.T) {
 		}
 	})
 }
+
+// Verify that a handler result of type json.RawMessage is delivered to the
+// client verbatim, and that other result values are still encoded by
+// json.Marshal.
+func TestServer_rawResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		srv, cli := channel.Direct()
+		s := jrpc2.NewServer(handler.Map{
+			// A RawMessage returned through the plain Handler signature.
+			// Whitespace and HTML-significant characters must survive.
+			"Raw": func(context.Context, *jrpc2.Request) (any, error) {
+				return json.RawMessage(`{ "html": "<b>&</b>",  "n": 1 }`), nil
+			},
+			// A RawMessage returned through a handler.New wrapper.
+			"Typed": handler.New(func(context.Context) json.RawMessage {
+				return json.RawMessage(`[1,  2,3]`)
+			}),
+			// A nil RawMessage encodes as null.
+			"Nil": func(context.Context, *jrpc2.Request) (any, error) {
+				return json.RawMessage(nil), nil
+			},
+			// Other values are still encoded (and HTML-escaped) by json.Marshal.
+			"Struct": handler.New(func(context.Context) map[string]string {
+				return map[string]string{"html": "<b>&</b>"}
+			}),
+		}, nil).Start(srv)
+		defer func() {
+			cli.Close()
+			if err := s.Wait(); err != nil {
+				t.Errorf("Server wait: unexpected error %v", err)
+			}
+		}()
+
+		// A non-RawMessage result must be exactly what json.Marshal produces,
+		// including HTML escaping.
+		escaped, err := json.Marshal(map[string]string{"html": "<b>&</b>"})
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+
+		tests := []struct {
+			input, want string
+		}{
+			{`{"jsonrpc":"2.0","id":1,"method":"Raw"}`,
+				`{"jsonrpc":"2.0","id":1,"result":{ "html": "<b>&</b>",  "n": 1 }}`},
+			{`{"jsonrpc":"2.0","id":2,"method":"Typed"}`,
+				`{"jsonrpc":"2.0","id":2,"result":[1,  2,3]}`},
+			{`{"jsonrpc":"2.0","id":3,"method":"Nil"}`,
+				`{"jsonrpc":"2.0","id":3,"result":null}`},
+			{`{"jsonrpc":"2.0","id":4,"method":"Struct"}`,
+				`{"jsonrpc":"2.0","id":4,"result":` + string(escaped) + `}`},
+		}
+		for _, test := range tests {
+			if err := cli.Send([]byte(test.input)); err != nil {
+				t.Fatalf("Send %#q failed: %v", test.input, err)
+			}
+			raw, err := cli.Recv()
+			if err != nil {
+				t.Fatalf("Recv failed: %v", err)
+			}
+			if got := string(raw); got != test.want {
+				t.Errorf("Simulated call %#q: got %#q, want %#q", test.input, got, test.want)
+			}
+		}
+	})
+}
+
+// Verify that an empty (non-nil) json.RawMessage result is still reported as
+// an encoding error rather than passed through as an empty result.
+func TestServer_rawResultEmpty(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		loc := server.NewLocal(handler.Map{
+			"Empty": func(context.Context, *jrpc2.Request) (any, error) {
+				return json.RawMessage{}, nil
+			},
+		}, nil)
+		defer loc.Close()
+
+		rsp, err := loc.Client.Call(t.Context(), "Empty", nil)
+		if err == nil {
+			t.Fatalf("Call Empty: got %v, want error", rsp)
+		}
+		if got := jrpc2.ErrorCode(err); got != jrpc2.SystemError {
+			t.Errorf("Call Empty: got code %v, want %v", got, jrpc2.SystemError)
+		}
+	})
+}
+
+// Verify that a callback handler result of type json.RawMessage is also
+// delivered verbatim.
+func TestServer_callbackRawResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const raw = `{ "raw" : true }`
+		loc := server.NewLocal(make(handler.Map), &server.LocalOptions{
+			Server: &jrpc2.ServerOptions{AllowPush: true},
+			Client: &jrpc2.ClientOptions{
+				OnCallback: func(context.Context, *jrpc2.Request) (any, error) {
+					return json.RawMessage(raw), nil
+				},
+			},
+		})
+		defer loc.Close()
+
+		rsp, err := loc.Server.Callback(t.Context(), "raw", nil)
+		if err != nil {
+			t.Fatalf("Callback: unexpected error: %v", err)
+		}
+		if got := rsp.ResultString(); got != raw {
+			t.Errorf("Callback result: got %#q, want %#q", got, raw)
+		}
+	})
+}
