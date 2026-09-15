@@ -385,6 +385,18 @@ func (s *Server) invoke(base context.Context, h Handler, req *Request) (json.Raw
 		}
 		return nil, err // a call reporting an error
 	}
+	return marshalResult(v)
+}
+
+// marshalResult encodes the result value v of a handler as JSON.
+//
+// As a special case, a non-empty [json.RawMessage] is returned as-is, without
+// re-encoding or validation, so that a handler can serve pre-rendered bytes.
+// The handler is responsible for ensuring such a value is valid JSON.
+func marshalResult(v any) (json.RawMessage, error) {
+	if raw, ok := v.(json.RawMessage); ok && len(raw) != 0 {
+		return raw, nil
+	}
 	return json.Marshal(v)
 }
 

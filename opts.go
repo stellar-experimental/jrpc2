@@ -4,7 +4,6 @@ package jrpc2
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"runtime"
@@ -180,7 +179,7 @@ func (c *ClientOptions) handleCallback() func(context.Context, *jmessage) []byte
 			})
 		})
 		if err == nil {
-			rsp.R, err = json.Marshal(v)
+			rsp.R, err = marshalResult(v)
 		}
 		if err != nil {
 			rsp.R = nil
