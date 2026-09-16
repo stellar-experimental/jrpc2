@@ -401,3 +401,119 @@ func mustPost(t *testing.T, cli *http.Client, url, charset, req string, code int
 	}
 	return string(body)
 }
+
+// Verify a batch mixing calls, notifications, and invalid requests.
+func TestBridge_batchMixed(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		b := jhttp.NewBridge(testService, nil)
+		defer checkClose(t, b)
+		hsrv, hcli := mtest.NewHTTPServer(t, b)
+
+		got := mustPost(t, hcli, hsrv.URL, "", `[
+		  {"jsonrpc":"2.0","id":1,"method":"Test1","params":["a"]},
+		  {"jsonrpc":"2.0","method":"NoneSuch"},
+		  {"jsonrpc":"2.0","id":2,"method":"NoneSuch"},
+		  {"jsonrpc":"1.0","method":"Test1"},
+		  {"jsonrpc":"2.0"},
+		  {"jsonrpc":"2.0","id":1,"method":"Test1","params":["b","c"]}
+		]`, http.StatusOK)
+		// Invalid requests are answered first, then the rest in order.
+		const want = `[{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid version marker"}},` +
+			`{"jsonrpc":"2.0","id":1,"result":1},` +
+			`{"jsonrpc":"2.0","id":2,"error":{"code":-32601,"message":"method not found","data":"NoneSuch"}},` +
+			`{"jsonrpc":"2.0","id":1,"result":2}]`
+		if got != want {
+			t.Errorf("POST body: got %#q, want %#q", got, want)
+		}
+
+		// Only notifications, none statically invalid.
+		got = mustPost(t, hcli, hsrv.URL, "", `[{"jsonrpc":"2.0","method":"NoneSuch"},{"jsonrpc":"2.0"}]`, http.StatusNoContent)
+		if got != "" {
+			t.Errorf("POST body: got %q, want empty", got)
+		}
+	})
+}
+
+// Verify that a json.RawMessage result is written verbatim, with a correct
+// Content-Length even when the body exceeds the chunking threshold.
+func TestBridge_rawResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		big := json.RawMessage("[" + strings.Repeat("1,", 2048) + "1]")
+		b := jhttp.NewBridge(handler.Map{
+			"Raw": handler.New(func(context.Context) json.RawMessage {
+				return json.RawMessage(`{ "html": "<b>",  "n": 1 }`)
+			}),
+			"Big": handler.New(func(context.Context) json.RawMessage { return big }),
+		}, nil)
+		defer checkClose(t, b)
+		hsrv, hcli := mtest.NewHTTPServer(t, b)
+
+		tests := []struct {
+			input, want string
+		}{
+			{`{"jsonrpc":"2.0","id":1,"method":"Raw"}`,
+				`{"jsonrpc":"2.0","id":1,"result":{ "html": "<b>",  "n": 1 }}`},
+			{`[{"jsonrpc":"2.0","id":1,"method":"Raw"},{"jsonrpc":"2.0","id":2,"method":"Raw"}]`,
+				`[{"jsonrpc":"2.0","id":1,"result":{ "html": "<b>",  "n": 1 }},` +
+					`{"jsonrpc":"2.0","id":2,"result":{ "html": "<b>",  "n": 1 }}]`},
+			{`{"jsonrpc":"2.0","id":3,"method":"Big"}`,
+				`{"jsonrpc":"2.0","id":3,"result":` + string(big) + `}`},
+		}
+		for _, test := range tests {
+			rsp, err := hcli.Post(hsrv.URL, "application/json", strings.NewReader(test.input))
+			if err != nil {
+				t.Fatalf("POST request failed: %v", err)
+			}
+			body, _ := io.ReadAll(rsp.Body)
+			rsp.Body.Close()
+			if got := string(body); got != test.want {
+				t.Errorf("POST %#q body: got %#q, want %#q", test.input, got, test.want)
+			}
+			if got, want := rsp.ContentLength, int64(len(test.want)); got != want {
+				t.Errorf("POST %#q Content-Length: got %d, want %d", test.input, got, want)
+			}
+		}
+	})
+}
+
+// Verify that handlers run on the HTTP request context.
+func TestBridge_requestContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		type key struct{}
+		b := jhttp.NewBridge(handler.Map{
+			"Ctx": handler.New(func(ctx context.Context) string {
+				s, _ := ctx.Value(key{}).(string)
+				return s
+			}),
+		}, nil)
+		defer checkClose(t, b)
+		hsrv, hcli := mtest.NewHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			b.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), key{}, "from request")))
+		}))
+
+		got := mustPost(t, hcli, hsrv.URL, "", `{"jsonrpc":"2.0","id":1,"method":"Ctx"}`, http.StatusOK)
+		const want = `{"jsonrpc":"2.0","id":1,"result":"from request"}`
+		if got != want {
+			t.Errorf("POST body: got %#q, want %#q", got, want)
+		}
+	})
+}
+
+// Verify that a Getter writes a json.RawMessage result verbatim.
+func TestGetter_rawResult(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := jhttp.NewGetter(handler.Map{
+			"raw": handler.New(func(context.Context, map[string]string) json.RawMessage {
+				return json.RawMessage(`[ 1 ]`)
+			}),
+		}, nil)
+		defer checkClose(t, g)
+		hsrv, hcli := mtest.NewHTTPServer(t, g)
+
+		got := mustGet(t, hcli, hsrv.URL+"/raw", http.StatusOK)
+		const want = `[ 1 ]`
+		if got != want {
+			t.Errorf("GET body: got %#q, want %#q", got, want)
+		}
+	})
+}
