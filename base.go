@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -165,12 +166,14 @@ func (r *Response) UnmarshalResult(v any) error {
 func (r *Response) ResultString() string { return string(r.result) }
 
 // MarshalJSON converts the response to equivalent JSON.
-func (r *Response) MarshalJSON() ([]byte, error) {
-	return (&jmessage{
-		ID: json.RawMessage(r.id),
-		R:  r.result,
-		E:  r.err,
-	}).toJSON()
+func (r *Response) MarshalJSON() ([]byte, error) { return r.message().toJSON() }
+
+// WriteTo writes the JSON encoding of r to w without copying the result.
+// It implements [io.WriterTo].
+func (r *Response) WriteTo(w io.Writer) (int64, error) { return r.message().writeTo(w) }
+
+func (r *Response) message() *jmessage {
+	return &jmessage{ID: json.RawMessage(r.id), R: r.result, E: r.err}
 }
 
 // wait blocks until r is complete. It is safe to call this multiple times and

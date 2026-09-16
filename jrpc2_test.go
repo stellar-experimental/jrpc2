@@ -3,6 +3,7 @@
 package jrpc2_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1631,5 +1632,38 @@ func TestParsedRequest_ToRequest(t *testing.T) {
 	}
 	if x := reqs[2].ToRequest(); x != nil {
 		t.Errorf("ToRequest(invalid): got %+v, want nil", x)
+	}
+}
+
+// Verify that WriteTo produces the same encoding as MarshalJSON.
+func TestResponse_WriteTo(t *testing.T) {
+	s := jrpc2.NewServer(handler.Map{
+		"Raw":  handler.New(func(context.Context) json.RawMessage { return json.RawMessage(`[1,  2]`) }),
+		"Fail": handler.New(func(context.Context) error { return jrpc2.Errorf(jrpc2.InvalidParams, "nope") }),
+	}, nil)
+	reqs, err := jrpc2.ParseRequests([]byte(`[
+	   {"jsonrpc":"2.0","id":1,"method":"Raw"},
+	   {"jsonrpc":"2.0","id":2,"method":"Fail"},
+	   {"jsonrpc":"1.0","method":"Raw"}]`))
+	if err != nil {
+		t.Fatalf("ParseRequests: %v", err)
+	}
+	rsps := s.ServeRequests(t.Context(), reqs)
+	if len(rsps) != 3 {
+		t.Fatalf("Got %d responses, want 3", len(rsps))
+	}
+	for _, rsp := range rsps {
+		want, err := rsp.MarshalJSON()
+		if err != nil {
+			t.Fatalf("MarshalJSON: %v", err)
+		}
+		var buf bytes.Buffer
+		n, err := rsp.WriteTo(&buf)
+		if err != nil {
+			t.Errorf("WriteTo: unexpected error: %v", err)
+		}
+		if got := buf.String(); got != string(want) || n != int64(len(want)) {
+			t.Errorf("WriteTo: got (%#q, %d), want (%#q, %d)", got, n, want, len(want))
+		}
 	}
 }
