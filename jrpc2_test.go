@@ -9,7 +9,9 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
+	"runtime"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1666,4 +1668,25 @@ func TestResponse_WriteTo(t *testing.T) {
 			t.Errorf("WriteTo: got (%#q, %d), want (%#q, %d)", got, n, want, len(want))
 		}
 	}
+}
+
+// Verify that a negative Concurrency removes the handler limit.
+func TestServer_unboundedConcurrency(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		n := runtime.NumCPU() + 1
+		var barrier sync.WaitGroup
+		barrier.Add(n)
+		s := jrpc2.NewServer(handler.Map{
+			// Each call blocks until all n are running at once.
+			"Wait": handler.New(func(context.Context) error { barrier.Done(); barrier.Wait(); return nil }),
+		}, &jrpc2.ServerOptions{Concurrency: -1})
+
+		reqs := make([]*jrpc2.ParsedRequest, n)
+		for i := range reqs {
+			reqs[i] = &jrpc2.ParsedRequest{ID: strconv.Itoa(i + 1), Method: "Wait"}
+		}
+		if got := len(s.ServeRequests(t.Context(), reqs)); got != n {
+			t.Errorf("Got %d responses, want %d", got, n)
+		}
+	})
 }

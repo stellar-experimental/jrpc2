@@ -60,7 +60,7 @@ func ServerMetrics() *expvar.Map { return serverMetrics }
 type Server struct {
 	wg  sync.WaitGroup      // ready when workers are done at shutdown time
 	mux Assigner            // associates method names with handlers
-	sem *semaphore.Weighted // bounds concurrent execution (default 1)
+	sem *semaphore.Weighted // bounds concurrent execution; nil if unbounded
 
 	// Configurable settings
 	allowP  bool                   // allow server notifications to the client
@@ -100,7 +100,7 @@ func NewServer(mux Assigner, opts *ServerOptions) *Server {
 	}
 	s := &Server{
 		mux:     mux,
-		sem:     semaphore.NewWeighted(opts.concurrency()),
+		sem:     opts.concurrency(),
 		allowP:  opts.allowPush(),
 		log:     opts.logFunc(),
 		rpcLog:  opts.rpcLog(),
@@ -372,10 +372,12 @@ func (s *Server) setContext(t *task, id string) {
 // the return value into JSON if there is one.
 func (s *Server) invoke(base context.Context, h Handler, req *Request) (json.RawMessage, error) {
 	ctx := serverKey.Attach(base, s)
-	if err := s.sem.Acquire(ctx, 1); err != nil {
-		return nil, err
+	if s.sem != nil {
+		if err := s.sem.Acquire(ctx, 1); err != nil {
+			return nil, err
+		}
+		defer s.sem.Release(1)
 	}
-	defer s.sem.Release(1)
 
 	s.rpcLog.LogRequest(ctx, req)
 	v, err := h(ctx, req)
