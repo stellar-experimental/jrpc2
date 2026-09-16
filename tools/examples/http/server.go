@@ -1,11 +1,11 @@
 // Copyright (C) 2017 Michael J. Fromberger. All Rights Reserved.
 
 // Program http demonstrates how to set up a JSON-RPC 2.0 server using the
-// github.com/creachadair/jrpc2 package with an HTTP transport.
+// github.com/stellar-experimental/jrpc2 package with an HTTP transport.
 //
 // Usage (see also the client example):
 //
-//	go build github.com/creachadair/jrpc2/tools/examples/http
+//	go build github.com/stellar-experimental/jrpc2/tools/examples/http
 //	./http -listen :8080
 //
 // The server accepts RPCs on http://<address>/rpc.
@@ -18,9 +18,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/handler"
-	"github.com/creachadair/jrpc2/jhttp"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2/jhttp"
 )
 
 var listenAddr = flag.String("listen", "", "Service address")

@@ -5,7 +5,7 @@
 //
 // Usage:
 //
-//	go build github.com/creachadair/jrpc2/tools/examples/adder
+//	go build github.com/stellar-experimental/jrpc2/tools/examples/adder
 //	./adder
 //
 // Queries to try (copy and paste):
@@ -19,9 +19,9 @@ import (
 	"log"
 	"os"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
-	"github.com/creachadair/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/handler"
 )
 
 // Add will be exported as a method named "Add".

@@ -22,10 +22,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
-	"github.com/creachadair/jrpc2/jhttp"
 	"github.com/creachadair/wschannel"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/jhttp"
 )
 
 var (
@@ -71,7 +71,7 @@ server in order for communication to work. The options are:
   lsp        -- header-framed, content-type application/vscode-jsonrpc (like LSP)
   raw        -- unframed, each message is a complete JSON value
 
-See also: https://godoc.org/github.com/creachadair/jrpc2/channel.
+See also: https://godoc.org/github.com/stellar-experimental/jrpc2/channel.
 The default framing is read from the JCALL_FRAMING environment variable, if set.
 The -f flag overrides the environment.
 

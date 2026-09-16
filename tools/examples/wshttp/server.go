@@ -1,11 +1,11 @@
 // Copyright (C) 2017 Michael J. Fromberger. All Rights Reserved.
 
 // Program wshttp demonstrates how to set up a JSON-RPC 20 server using
-// the github.com/creachadair/jrpc2 package with a Websocket transport.
+// the github.com/stellar-experimental/jrpc2 package with a Websocket transport.
 //
 // Usage:
 //
-//	go build github.com/creachadair/jrpc2/tools/examples/wshttp
+//	go build github.com/stellar-experimental/jrpc2/tools/examples/wshttp
 //	./wshttp -listen :8080
 //
 // The server accepts RPC connections on ws://<address>/rpc.
@@ -17,11 +17,11 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
-	"github.com/creachadair/jrpc2/handler"
-	"github.com/creachadair/jrpc2/server"
 	"github.com/creachadair/wschannel"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2/server"
 )
 
 var listenAddr = flag.String("listen", "", "Service address")

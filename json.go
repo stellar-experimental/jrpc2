@@ -5,6 +5,7 @@ package jrpc2
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 )
 
 // ParseRequests parses either a single request or a batch of requests from
@@ -51,11 +52,11 @@ func (p *ParsedRequest) ToRequest() *Request {
 	if p == nil || p.Error != nil {
 		return nil
 	}
-	return &Request{
-		id:     fixID(json.RawMessage(p.ID)),
-		method: p.Method,
-		params: p.Params,
+	req := &Request{method: p.Method, params: p.Params}
+	if p.ID != "" {
+		req.id = fixID(json.RawMessage(p.ID))
 	}
+	return req
 }
 
 // jmessages is either a single protocol message or an array of protocol
@@ -158,12 +159,23 @@ func (j *jmessage) fail(code Code, msg string) {
 	}
 }
 
-func (j *jmessage) toJSON() ([]byte, error) {
-	var sb bytes.Buffer
-	sb.WriteString(`{"jsonrpc":"2.0"`)
+var (
+	fragOpen   = []byte(`{"jsonrpc":"2.0"`)
+	fragID     = []byte(`,"id":`)
+	fragMethod = []byte(`,"method":`)
+	fragParams = []byte(`,"params":`)
+	fragResult = []byte(`,"result":`)
+	fragError  = []byte(`,"error":`)
+	fragClose  = []byte(`}`)
+)
+
+// parts returns the slices whose concatenation is the JSON encoding of j.
+// The payload fields of j are aliased, not copied.
+func (j *jmessage) parts() ([][]byte, error) {
+	parts := make([][]byte, 0, 7)
+	parts = append(parts, fragOpen)
 	if len(j.ID) != 0 {
-		sb.WriteString(`,"id":`)
-		sb.Write(j.ID)
+		parts = append(parts, fragID, j.ID)
 	}
 	switch {
 	case j.M != "":
@@ -171,28 +183,47 @@ func (j *jmessage) toJSON() ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		sb.WriteString(`,"method":`)
-		sb.Write(m)
+		parts = append(parts, fragMethod, m)
 		if len(j.P) != 0 {
-			sb.WriteString(`,"params":`)
-			sb.Write(j.P)
+			parts = append(parts, fragParams, j.P)
 		}
 
 	case len(j.R) != 0:
-		sb.WriteString(`,"result":`)
-		sb.Write(j.R)
+		parts = append(parts, fragResult, j.R)
 
 	case j.E != nil:
 		e, err := json.Marshal(j.E)
 		if err != nil {
 			return nil, err
 		}
-		sb.WriteString(`,"error":`)
-		sb.Write(e)
+		parts = append(parts, fragError, e)
 	}
+	return append(parts, fragClose), nil
+}
 
-	sb.WriteByte('}')
-	return sb.Bytes(), nil
+func (j *jmessage) toJSON() ([]byte, error) {
+	parts, err := j.parts()
+	if err != nil {
+		return nil, err
+	}
+	return bytes.Join(parts, nil), nil
+}
+
+// writeTo writes the JSON encoding of j to w without copying its payload.
+func (j *jmessage) writeTo(w io.Writer) (int64, error) {
+	parts, err := j.parts()
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	for _, p := range parts {
+		m, err := w.Write(p)
+		n += int64(m)
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
 }
 
 func (j *jmessage) parseJSON(data []byte) error {

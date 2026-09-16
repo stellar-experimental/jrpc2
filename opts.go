@@ -4,11 +4,12 @@ package jrpc2
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"runtime"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 // ServerOptions control the behaviour of a server created by [NewServer].  A
@@ -35,8 +36,9 @@ type ServerOptions struct {
 	DisableBuiltin bool
 
 	// Allows up to the specified number of goroutines to execute in parallel in
-	// request handlers. A value less than 1 uses runtime.NumCPU().  Note that
-	// this setting does not constrain order of issue.
+	// request handlers. A value of 0 uses runtime.NumCPU(); a negative value
+	// removes the limit. Note that this setting does not constrain order of
+	// issue.
 	Concurrency int
 
 	// If set, this function is called to create a new base request context.
@@ -59,11 +61,15 @@ func (s *ServerOptions) logFunc() func(string, ...any) {
 func (s *ServerOptions) allowPush() bool    { return s != nil && s.AllowPush }
 func (s *ServerOptions) allowBuiltin() bool { return s == nil || !s.DisableBuiltin }
 
-func (s *ServerOptions) concurrency() int64 {
-	if s == nil || s.Concurrency < 1 {
-		return int64(runtime.NumCPU())
+// concurrency returns the handler concurrency limit, or nil if unbounded.
+func (s *ServerOptions) concurrency() *semaphore.Weighted {
+	switch {
+	case s == nil || s.Concurrency == 0:
+		return semaphore.NewWeighted(int64(runtime.NumCPU()))
+	case s.Concurrency < 0:
+		return nil
 	}
-	return int64(s.Concurrency)
+	return semaphore.NewWeighted(int64(s.Concurrency))
 }
 
 func (s *ServerOptions) startTime() time.Time {
@@ -170,7 +176,7 @@ func (c *ClientOptions) handleCallback() func(context.Context, *jmessage) []byte
 		// cleaning up the client, can cause the server to stall in a manner that
 		// is difficult to debug.
 		//
-		// See https://github.com/creachadair/jrpc2/issues/41.
+		// See https://github.com/stellar-experimental/jrpc2/issues/41.
 		rsp := &jmessage{ID: req.ID}
 		v, err := panicToError(func() (any, error) {
 			return cb(ctx, &Request{
@@ -180,7 +186,7 @@ func (c *ClientOptions) handleCallback() func(context.Context, *jmessage) []byte
 			})
 		})
 		if err == nil {
-			rsp.R, err = json.Marshal(v)
+			rsp.R, err = marshalResult(v)
 		}
 		if err != nil {
 			rsp.R = nil

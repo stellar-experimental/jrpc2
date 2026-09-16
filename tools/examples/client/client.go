@@ -1,11 +1,11 @@
 // Copyright (C) 2017 Michael J. Fromberger. All Rights Reserved.
 
 // Program client demonstrates how to set up a JSON-RPC 2.0 client using the
-// github.com/creachadair/jrpc2 package.
+// github.com/stellar-experimental/jrpc2 package.
 //
 // Usage (communicates with the server example):
 //
-//	go build github.com/creachadair/jrpc2/tools/examples/client
+//	go build github.com/stellar-experimental/jrpc2/tools/examples/client
 //	./client -server :8080
 //
 // See also examples/server/server.go.
@@ -20,9 +20,9 @@ import (
 	"net"
 	"sync"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
-	"github.com/creachadair/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/handler"
 )
 
 var serverAddr = flag.String("server", "", "Server address")

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/creachadair/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/channel"
 )
 
 // A Client is a JSON-RPC 2.0 client. The client sends requests and receives

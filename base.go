@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -34,6 +35,9 @@ type Namer interface {
 // otherwise the server will wrap the resulting value. If the error implements
 // the [ErrCoder] interface, the resulting error response will use the code
 // reported by its ErrCode method.
+//
+// A result of type [json.RawMessage] is sent verbatim; the handler must
+// ensure it is valid JSON.
 //
 // The context passed to the handler by a [Server] includes two special values
 // that the handler may extract.
@@ -162,12 +166,14 @@ func (r *Response) UnmarshalResult(v any) error {
 func (r *Response) ResultString() string { return string(r.result) }
 
 // MarshalJSON converts the response to equivalent JSON.
-func (r *Response) MarshalJSON() ([]byte, error) {
-	return (&jmessage{
-		ID: json.RawMessage(r.id),
-		R:  r.result,
-		E:  r.err,
-	}).toJSON()
+func (r *Response) MarshalJSON() ([]byte, error) { return r.message().toJSON() }
+
+// WriteTo writes the JSON encoding of r to w without copying the result.
+// It implements [io.WriterTo].
+func (r *Response) WriteTo(w io.Writer) (int64, error) { return r.message().writeTo(w) }
+
+func (r *Response) message() *jmessage {
+	return &jmessage{ID: json.RawMessage(r.id), R: r.result, E: r.err}
 }
 
 // wait blocks until r is complete. It is safe to call this multiple times and

@@ -8,8 +8,8 @@ import (
 	"net"
 	"sync"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
 )
 
 // Service is the interface used by the Loop function to start up a server.

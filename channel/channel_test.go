@@ -10,7 +10,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/creachadair/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/channel"
 )
 
 // newPipe creates a pair of connected in-memory channels using the specified

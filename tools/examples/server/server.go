@@ -1,11 +1,11 @@
 // Copyright (C) 2017 Michael J. Fromberger. All Rights Reserved.
 
 // Program server demonstrates how to set up a JSON-RPC 2.0 server using the
-// github.com/creachadair/jrpc2 package.
+// github.com/stellar-experimental/jrpc2 package.
 //
 // Usage (see also the client example):
 //
-//	go build github.com/creachadair/jrpc2/tools/examples/server
+//	go build github.com/stellar-experimental/jrpc2/tools/examples/server
 //	./server -address :8080
 //
 // See also examples/client/client.go.
@@ -17,10 +17,10 @@ import (
 	"log"
 	"net"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
-	"github.com/creachadair/jrpc2/handler"
-	"github.com/creachadair/jrpc2/server"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2/server"
 )
 
 // A binop carries a pair of integers for use as parameters.
