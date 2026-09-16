@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/creachadair/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/channel"
 )
 
 var benchMessage = map[string]any{

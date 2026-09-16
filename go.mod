@@ -1,4 +1,4 @@
-module github.com/creachadair/jrpc2
+module github.com/stellar-experimental/jrpc2
 
 go 1.26.0
 
@@ -14,11 +14,5 @@ require (
 	golang.org/x/tools v0.44.1-0.20260420230617-19499e7caabc // indirect
 	honnef.co/go/tools v0.8.1 // indirect
 )
-
-// A bug in handler.New could panic a wrapped handler on pointer arguments.
-retract [v0.21.2, v0.22.0]
-
-// Checksum mismatch due to accidental double tag push. Safe to use, but warns.
-retract v0.23.0
 
 tool honnef.co/go/tools/staticcheck

@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/handler"
-	"github.com/creachadair/jrpc2/internal/testutil"
 	"github.com/google/go-cmp/cmp"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2/internal/testutil"
 )
 
 func y1(context.Context) (int, error) { return 0, nil }

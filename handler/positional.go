@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/creachadair/jrpc2"
+	"github.com/stellar-experimental/jrpc2"
 )
 
 // NewPos adapts a function to a [jrpc2.Handler]. The concrete value of fn must

@@ -18,12 +18,12 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/channel"
-	"github.com/creachadair/jrpc2/handler"
-	"github.com/creachadair/jrpc2/server"
 	"github.com/creachadair/mds/mctx"
 	"github.com/google/go-cmp/cmp"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/channel"
+	"github.com/stellar-experimental/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2/server"
 )
 
 // Static type assertions.

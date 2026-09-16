@@ -12,10 +12,10 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/handler"
-	"github.com/creachadair/jrpc2/jhttp"
 	"github.com/creachadair/mds/mtest"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/handler"
+	"github.com/stellar-experimental/jrpc2/jhttp"
 )
 
 var testService = handler.Map{

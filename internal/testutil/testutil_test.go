@@ -5,7 +5,7 @@ package testutil_test
 import (
 	"testing"
 
-	"github.com/creachadair/jrpc2/internal/testutil"
+	"github.com/stellar-experimental/jrpc2/internal/testutil"
 )
 
 func TestParseRequest(t *testing.T) {

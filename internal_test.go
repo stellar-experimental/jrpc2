@@ -12,9 +12,9 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/creachadair/jrpc2/channel"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/stellar-experimental/jrpc2/channel"
 )
 
 var errInvalidVersion = &Error{Code: InvalidRequest, Message: "invalid version marker"}

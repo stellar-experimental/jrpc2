@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/creachadair/jrpc2"
+	"github.com/stellar-experimental/jrpc2"
 )
 
 // ParseRequest parses a single JSON request object.

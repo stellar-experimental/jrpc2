@@ -24,7 +24,7 @@ method on the [Request]:
 	   return usefulStuffWith(args)
 	}
 
-The [github.com/creachadair/jrpc2/handler] package uses reflection to adapt
+The [github.com/stellar-experimental/jrpc2/handler] package uses reflection to adapt
 functions that do not have this type to handlers.  For example, given:
 
 	// Add returns the sum of a slice of integers.
