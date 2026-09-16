@@ -217,12 +217,12 @@ func TestServer_specialMethods(t *testing.T) {
 			}),
 		}, nil)
 		for _, name := range []string{rpcServerInfo, "donkeybait"} {
-			if got := s.assignLocked(t.Context(), name); got == nil {
-				t.Errorf("s.assignLocked(%s): no method assigned", name)
+			if got := s.assign(t.Context(), name); got == nil {
+				t.Errorf("s.assign(%s): no method assigned", name)
 			}
 		}
-		if got := s.assignLocked(t.Context(), "rpc.nonesuch"); got != nil {
-			t.Errorf("s.assignLocked(rpc.nonesuch): got %p, want nil", got)
+		if got := s.assign(t.Context(), "rpc.nonesuch"); got != nil {
+			t.Errorf("s.assign(rpc.nonesuch): got %p, want nil", got)
 		}
 	})
 }
@@ -239,14 +239,14 @@ func TestServer_disableBuiltinHook(t *testing.T) {
 
 		// With builtins disabled, the default rpc.* methods should not get assigned.
 		for _, name := range []string{rpcServerInfo} {
-			if got := s.assignLocked(t.Context(), name); got != nil {
-				t.Errorf("s.assignLocked(%s): got %p, wanted nil", name, got)
+			if got := s.assign(t.Context(), name); got != nil {
+				t.Errorf("s.assign(%s): got %p, wanted nil", name, got)
 			}
 		}
 
 		// However, user-assigned methods with this prefix should now work.
-		if got := s.assignLocked(t.Context(), "rpc.nonesuch"); got == nil {
-			t.Error("s.assignLocked(rpc.nonesuch): missing assignment")
+		if got := s.assign(t.Context(), "rpc.nonesuch"); got == nil {
+			t.Error("s.assign(rpc.nonesuch): missing assignment")
 		}
 	})
 }

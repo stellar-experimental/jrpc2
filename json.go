@@ -51,11 +51,11 @@ func (p *ParsedRequest) ToRequest() *Request {
 	if p == nil || p.Error != nil {
 		return nil
 	}
-	return &Request{
-		id:     fixID(json.RawMessage(p.ID)),
-		method: p.Method,
-		params: p.Params,
+	req := &Request{method: p.Method, params: p.Params}
+	if p.ID != "" {
+		req.id = fixID(json.RawMessage(p.ID))
 	}
+	return req
 }
 
 // jmessages is either a single protocol message or an array of protocol
