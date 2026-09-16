@@ -1330,27 +1330,20 @@ func TestClient_IsStopped(t *testing.T) {
 	})
 }
 
-// Verify that a handler result of type json.RawMessage is delivered to the
-// client verbatim, and that other result values are still encoded by
-// json.Marshal.
+// Verify that a json.RawMessage result is delivered verbatim.
 func TestServer_rawResult(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		srv, cli := channel.Direct()
 		s := jrpc2.NewServer(handler.Map{
-			// A RawMessage returned through the plain Handler signature.
-			// Whitespace and HTML-significant characters must survive.
 			"Raw": func(context.Context, *jrpc2.Request) (any, error) {
 				return json.RawMessage(`{ "html": "<b>&</b>",  "n": 1 }`), nil
 			},
-			// A RawMessage returned through a handler.New wrapper.
 			"Typed": handler.New(func(context.Context) json.RawMessage {
 				return json.RawMessage(`[1,  2,3]`)
 			}),
-			// A nil RawMessage encodes as null.
 			"Nil": func(context.Context, *jrpc2.Request) (any, error) {
 				return json.RawMessage(nil), nil
 			},
-			// Other values are still encoded (and HTML-escaped) by json.Marshal.
 			"Struct": handler.New(func(context.Context) map[string]string {
 				return map[string]string{"html": "<b>&</b>"}
 			}),
@@ -1362,8 +1355,6 @@ func TestServer_rawResult(t *testing.T) {
 			}
 		}()
 
-		// A non-RawMessage result must be exactly what json.Marshal produces,
-		// including HTML escaping.
 		escaped, err := json.Marshal(map[string]string{"html": "<b>&</b>"})
 		if err != nil {
 			t.Fatalf("Marshal: %v", err)
@@ -1396,8 +1387,7 @@ func TestServer_rawResult(t *testing.T) {
 	})
 }
 
-// Verify that an empty (non-nil) json.RawMessage result is still reported as
-// an encoding error rather than passed through as an empty result.
+// Verify that an empty RawMessage result is still an encoding error.
 func TestServer_rawResultEmpty(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		loc := server.NewLocal(handler.Map{
@@ -1417,8 +1407,7 @@ func TestServer_rawResultEmpty(t *testing.T) {
 	})
 }
 
-// Verify that a callback handler result of type json.RawMessage is also
-// delivered verbatim.
+// Verify that a RawMessage callback result is delivered verbatim.
 func TestServer_callbackRawResult(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const raw = `{ "raw" : true }`
@@ -1440,4 +1429,207 @@ func TestServer_callbackRawResult(t *testing.T) {
 			t.Errorf("Callback result: got %#q, want %#q", got, raw)
 		}
 	})
+}
+
+// serveRequests serves input on s and returns the encoded responses.
+func serveRequests(t *testing.T, ctx context.Context, s *jrpc2.Server, input string) []string {
+	t.Helper()
+	reqs, err := jrpc2.ParseRequests([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseRequests %#q: unexpected error: %v", input, err)
+	}
+	var got []string
+	for _, rsp := range s.ServeRequests(ctx, reqs) {
+		bits, err := rsp.MarshalJSON()
+		if err != nil {
+			t.Fatalf("Marshal response: %v", err)
+		}
+		got = append(got, string(bits))
+	}
+	return got
+}
+
+// Verify the responses produced by ServeRequests.
+func TestServer_ServeRequests(t *testing.T) {
+	var notes atomic.Int32
+	s := jrpc2.NewServer(handler.Map{ // N.B. never started
+		"X": testOK,
+		"Raw": handler.New(func(context.Context) json.RawMessage {
+			return json.RawMessage(`{ "raw" : 1 }`)
+		}),
+		"Echo": func(ctx context.Context, req *jrpc2.Request) (any, error) {
+			return map[string]any{
+				"id":     req.ID(),
+				"method": req.Method(),
+				"note":   req.IsNotification(),
+				"same":   jrpc2.InboundRequest(ctx) == req,
+			}, nil
+		},
+		"Note": handler.New(func(ctx context.Context) error {
+			notes.Add(1)
+			if !jrpc2.InboundRequest(ctx).IsNotification() {
+				return errors.New("called, not notified")
+			}
+			return errors.New("discarded")
+		}),
+		"Fail": handler.New(func(context.Context) error {
+			return jrpc2.Errorf(jrpc2.InvalidParams, "nope").WithData("x")
+		}),
+	}, nil)
+
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{`{"jsonrpc":"2.0","id":1,"method":"X"}`,
+			[]string{`{"jsonrpc":"2.0","id":1,"result":"OK"}`}},
+		{`{"jsonrpc":"2.0","id":"r","method":"Raw"}`,
+			[]string{`{"jsonrpc":"2.0","id":"r","result":{ "raw" : 1 }}`}},
+
+		{`{"jsonrpc":"2.0","id":8,"method":"Echo"}`,
+			[]string{`{"jsonrpc":"2.0","id":8,"result":{"id":"8","method":"Echo","note":false,"same":true}}`}},
+
+		// A batch preserves order and omits notifications.
+		{`[{"jsonrpc":"2.0","id":1,"method":"X"},
+		   {"jsonrpc":"2.0","method":"X"},
+		   {"jsonrpc":"2.0","id":2,"method":"X"}]`,
+			[]string{`{"jsonrpc":"2.0","id":1,"result":"OK"}`, `{"jsonrpc":"2.0","id":2,"result":"OK"}`}},
+
+		// Duplicate IDs within a batch are each answered.
+		{`[{"jsonrpc":"2.0","id":1,"method":"X"},{"jsonrpc":"2.0","id":1,"method":"X"}]`,
+			[]string{`{"jsonrpc":"2.0","id":1,"result":"OK"}`, `{"jsonrpc":"2.0","id":1,"result":"OK"}`}},
+
+		{`[]`, nil},
+
+		// Invalid requests are answered, with a null ID if needed.
+		{`{"jsonrpc":"1.0","id":3,"method":"X"}`,
+			[]string{`{"jsonrpc":"2.0","id":3,"error":{"code":-32600,"message":"invalid version marker"}}`}},
+		{`{"jsonrpc":"1.0","method":"X"}`,
+			[]string{`{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid version marker"}}`}},
+		{`[1]`,
+			[]string{`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"request is not a JSON object"}}`}},
+
+		// Empty or unknown method: an error for a call, dropped for a notification.
+		{`{"jsonrpc":"2.0","id":4}`,
+			[]string{`{"jsonrpc":"2.0","id":4,"error":{"code":-32600,"message":"empty method name"}}`}},
+		{`{"jsonrpc":"2.0"}`, nil},
+		{`{"jsonrpc":"2.0","id":5,"method":"NoneSuch"}`,
+			[]string{`{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"method not found","data":"NoneSuch"}}`}},
+		{`{"jsonrpc":"2.0","method":"NoneSuch"}`, nil},
+
+		// Handler errors keep their code and data.
+		{`{"jsonrpc":"2.0","id":6,"method":"Fail"}`,
+			[]string{`{"jsonrpc":"2.0","id":6,"error":{"code":-32602,"message":"nope","data":"x"}}`}},
+
+		// A notification runs, sees IsNotification, and its error is discarded.
+		{`{"jsonrpc":"2.0","method":"Note"}`, nil},
+		{`{"jsonrpc":"2.0","id":7,"method":"Note"}`,
+			[]string{`{"jsonrpc":"2.0","id":7,"error":{"code":-32098,"message":"called, not notified"}}`}},
+	}
+	for _, test := range tests {
+		got := serveRequests(t, t.Context(), s, test.input)
+		if diff := cmp.Diff(test.want, got); diff != "" {
+			t.Errorf("ServeRequests %#q (-want, +got):\n%s", test.input, diff)
+		}
+	}
+	if got := notes.Load(); got != 2 {
+		t.Errorf("Note handler ran %d times, want 2", got)
+	}
+}
+
+// Verify the context and concurrency behaviour of ServeRequests.
+func TestServer_ServeRequests_context(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var hctx context.Context
+		a, b := make(chan struct{}), make(chan struct{})
+		s := jrpc2.NewServer(handler.Map{
+			"Capture": handler.New(func(ctx context.Context) error { hctx = ctx; return nil }),
+			"Block":   handler.New(func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }),
+
+			// A and B deadlock unless run concurrently.
+			"A": handler.New(func(context.Context) error { close(a); <-b; return nil }),
+			"B": handler.New(func(context.Context) error { close(b); <-a; return nil }),
+		}, &jrpc2.ServerOptions{Concurrency: 2})
+
+		// The handler context carries the server and ends when the handler returns.
+		if got := serveRequests(t, t.Context(), s, `{"jsonrpc":"2.0","id":1,"method":"Capture"}`); len(got) != 1 {
+			t.Fatalf("Capture: got %d responses, want 1", len(got))
+		}
+		if got := jrpc2.ServerFromContext(hctx); got != s {
+			t.Errorf("ServerFromContext: got %p, want %p", got, s)
+		}
+		if hctx.Err() == nil {
+			t.Error("Handler context did not end after the handler returned")
+		}
+
+		// Cancelling ctx cancels a running handler.
+		ctx, cancel := context.WithCancel(t.Context())
+		reqs, err := jrpc2.ParseRequests([]byte(`{"jsonrpc":"2.0","id":2,"method":"Block"}`))
+		if err != nil {
+			t.Fatalf("ParseRequests: %v", err)
+		}
+		go func() { synctest.Wait(); cancel() }()
+		rsps := s.ServeRequests(ctx, reqs)
+		if len(rsps) != 1 {
+			t.Fatalf("Block: got %d responses, want 1", len(rsps))
+		}
+		if got := rsps[0].Error(); got == nil || got.Code != jrpc2.Cancelled {
+			t.Errorf("Block: got error %v, want code %v", got, jrpc2.Cancelled)
+		}
+
+		// A batch runs concurrently.
+		got := serveRequests(t, t.Context(), s, `[{"jsonrpc":"2.0","id":3,"method":"A"},{"jsonrpc":"2.0","id":4,"method":"B"}]`)
+		want := []string{`{"jsonrpc":"2.0","id":3,"result":null}`, `{"jsonrpc":"2.0","id":4,"result":null}`}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("Concurrent batch (-want, +got):\n%s", diff)
+		}
+	})
+}
+
+// Verify that ServeRequests honours DisableBuiltin.
+func TestServer_ServeRequests_builtin(t *testing.T) {
+	const input = `{"jsonrpc":"2.0","id":1,"method":"rpc.serverInfo"}`
+	reqs, err := jrpc2.ParseRequests([]byte(input))
+	if err != nil {
+		t.Fatalf("ParseRequests: %v", err)
+	}
+
+	s := jrpc2.NewServer(testService, nil)
+	rsps := s.ServeRequests(t.Context(), reqs)
+	if len(rsps) != 1 {
+		t.Fatalf("rpc.serverInfo: got %d responses, want 1", len(rsps))
+	}
+	var info jrpc2.ServerInfo
+	if err := rsps[0].UnmarshalResult(&info); err != nil {
+		t.Fatalf("UnmarshalResult: %v", err)
+	}
+	if diff := cmp.Diff(testService.Names(), info.Methods); diff != "" {
+		t.Errorf("Methods (-want, +got):\n%s", diff)
+	}
+
+	s = jrpc2.NewServer(testService, &jrpc2.ServerOptions{DisableBuiltin: true})
+	want := []string{`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found","data":"rpc.serverInfo"}}`}
+	if diff := cmp.Diff(want, serveRequests(t, t.Context(), s, input)); diff != "" {
+		t.Errorf("DisableBuiltin (-want, +got):\n%s", diff)
+	}
+}
+
+// Verify that ToRequest distinguishes notifications from calls.
+func TestParsedRequest_ToRequest(t *testing.T) {
+	reqs, err := jrpc2.ParseRequests([]byte(`[
+	   {"jsonrpc":"2.0","method":"N"},
+	   {"jsonrpc":"2.0","id":5,"method":"C","params":[1]},
+	   {"jsonrpc":"1.0","id":6,"method":"X"}]`))
+	if err != nil {
+		t.Fatalf("ParseRequests: %v", err)
+	}
+	if n := reqs[0].ToRequest(); n == nil || !n.IsNotification() || n.ID() != "" || n.Method() != "N" {
+		t.Errorf("ToRequest(notification): got %+v, want a notification for N", n)
+	}
+	if c := reqs[1].ToRequest(); c == nil || c.IsNotification() || c.ID() != "5" || c.Method() != "C" || c.ParamString() != "[1]" {
+		t.Errorf("ToRequest(call): got %+v, want call 5 to C with params [1]", c)
+	}
+	if x := reqs[2].ToRequest(); x != nil {
+		t.Errorf("ToRequest(invalid): got %+v, want nil", x)
+	}
 }

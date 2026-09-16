@@ -55,7 +55,8 @@ func ServerMetrics() *expvar.Map { return serverMetrics }
 
 // Server implements a JSON-RPC 2.0 server. The server receives requests and
 // sends responses on a [channel.Channel] provided by the caller, and
-// dispatches requests to user-defined Handlers.
+// dispatches requests to user-defined Handlers. Requests can also be served
+// directly, without a channel, using [Server.ServeRequests].
 type Server struct {
 	wg  sync.WaitGroup      // ready when workers are done at shutdown time
 	mux Assigner            // associates method names with handlers
@@ -338,7 +339,7 @@ func (s *Server) checkAndAssignLocked(next jmessages) tasks {
 			t.err = errEmptyMethod
 		} else {
 			s.setContext(t, id)
-			t.m = s.assignLocked(t.ctx, t.hreq.method)
+			t.m = s.assign(t.ctx, t.hreq.method)
 			if t.m == nil {
 				t.err = errNoSuchMethod.WithData(t.hreq.method)
 			}
@@ -388,16 +389,86 @@ func (s *Server) invoke(base context.Context, h Handler, req *Request) (json.Raw
 	return marshalResult(v)
 }
 
-// marshalResult encodes the result value v of a handler as JSON.
-//
-// As a special case, a non-empty [json.RawMessage] is returned as-is, without
-// re-encoding or validation, so that a handler can serve pre-rendered bytes.
-// The handler is responsible for ensuring such a value is valid JSON.
+// marshalResult encodes a handler result as JSON. A non-empty json.RawMessage
+// is returned as-is, without validation or escaping.
 func marshalResult(v any) (json.RawMessage, error) {
 	if raw, ok := v.(json.RawMessage); ok && len(raw) != 0 {
 		return raw, nil
 	}
 	return json.Marshal(v)
+}
+
+// ServeRequests dispatches reqs to their handlers and returns the responses
+// in request order, without a channel. The server need not be started, and
+// ServeRequests is safe for concurrent use.
+//
+// Requests run concurrently under the server's concurrency limit. A
+// notification produces no response unless its Error field is set, in which
+// case it is answered with a null ID. Duplicate IDs are not checked.
+//
+// Handler contexts derive from ctx and end when the handler returns. The
+// NewContext option and CancelRequest do not apply.
+func (s *Server) ServeRequests(ctx context.Context, reqs []*ParsedRequest) []*Response {
+	start := time.Now()
+	rpcRequestsCount.Add(int64(len(reqs)))
+
+	ts := make(tasks, len(reqs))
+	for i, req := range reqs {
+		t := &task{
+			hreq:  &Request{method: req.Method, params: req.Params},
+			batch: req.Batch,
+		}
+		if req.ID != "" {
+			t.hreq.id = json.RawMessage(req.ID)
+		}
+		t.ctx = inboundRequestKey.Attach(ctx, t.hreq)
+		if req.Error != nil {
+			t.err = req.Error
+		} else if req.Method == "" {
+			t.err = errEmptyMethod
+		} else if t.m = s.assign(t.ctx, req.Method); t.m == nil {
+			t.err = errNoSuchMethod.WithData(req.Method)
+		}
+		if t.err != nil {
+			s.log("Request check error for %q (params %q): %v",
+				req.Method, string(req.Params), t.err)
+			rpcErrorsCount.Add(1)
+		}
+		ts[i] = t
+	}
+
+	// Run the last handler on the calling goroutine.
+	run := func(t *task) {
+		ctx, cancel := context.WithCancel(t.ctx)
+		defer cancel()
+		t.val, t.err = s.invoke(ctx, t.m, t.hreq)
+	}
+	todo, _ := ts.numToDo()
+	var wg sync.WaitGroup
+	for _, t := range ts {
+		if t.err != nil {
+			continue
+		}
+		todo--
+		if todo == 0 {
+			run(t)
+			break
+		}
+		wg.Go(func() { run(t) })
+	}
+	wg.Wait()
+
+	// Notifications are answered only if statically invalid.
+	var rsps []*Response
+	for i, t := range ts {
+		if t.hreq.id == nil && reqs[i].Error == nil {
+			continue
+		}
+		msg := t.response(s.rpcLog)
+		rsps = append(rsps, &Response{id: string(msg.ID), err: msg.E, result: msg.R})
+	}
+	s.log("Completed %d requests [%v elapsed]", len(reqs), time.Since(start))
+	return rsps
 }
 
 // ServerInfo returns an atomic snapshot of the current server info for s.
@@ -717,9 +788,8 @@ type ServerInfo struct {
 	StartTime time.Time `json:"startTime,omitzero"`
 }
 
-// assignLocked returns a Handler to handle the specified name, or nil.  The
-// caller must hold s.mu.
-func (s *Server) assignLocked(ctx context.Context, name string) Handler {
+// assign returns a Handler for name, or nil. It does not require s.mu.
+func (s *Server) assign(ctx context.Context, name string) Handler {
 	if s.builtin && strings.HasPrefix(name, "rpc.") {
 		switch name {
 		case rpcServerInfo:
@@ -798,31 +868,36 @@ func (ts tasks) responses(rpcLog RPCLogger) jmessages {
 				continue
 			}
 		}
-		rsp := &jmessage{ID: task.hreq.id, batch: task.batch}
-		if rsp.ID == nil {
-			rsp.ID = json.RawMessage("null")
-		}
-		if task.m == nil {
-			// No method was ever assigned for this task, so it was never run.
-			rsp.err = errTaskNotExecuted
-		}
-		if task.err == nil {
-			rsp.R = task.val
-		} else if e, ok := task.err.(*Error); ok {
-			rsp.E = e
-		} else if c := ErrorCode(task.err); c != NoError {
-			rsp.E = &Error{Code: c, Message: task.err.Error()}
-		} else {
-			rsp.E = &Error{Code: InternalError, Message: task.err.Error()}
-		}
-		rpcLog.LogResponse(task.ctx, &Response{
-			id:     string(rsp.ID),
-			err:    rsp.E,
-			result: rsp.R,
-		})
-		rsps = append(rsps, rsp)
+		rsps = append(rsps, task.response(rpcLog))
 	}
 	return rsps
+}
+
+// response constructs the response message for t and logs it to rpcLog.
+func (t *task) response(rpcLog RPCLogger) *jmessage {
+	rsp := &jmessage{ID: t.hreq.id, batch: t.batch}
+	if rsp.ID == nil {
+		rsp.ID = json.RawMessage("null")
+	}
+	if t.m == nil {
+		// No method was ever assigned for this task, so it was never run.
+		rsp.err = errTaskNotExecuted
+	}
+	if t.err == nil {
+		rsp.R = t.val
+	} else if e, ok := t.err.(*Error); ok {
+		rsp.E = e
+	} else if c := ErrorCode(t.err); c != NoError {
+		rsp.E = &Error{Code: c, Message: t.err.Error()}
+	} else {
+		rsp.E = &Error{Code: InternalError, Message: t.err.Error()}
+	}
+	rpcLog.LogResponse(t.ctx, &Response{
+		id:     string(rsp.ID),
+		err:    rsp.E,
+		result: rsp.R,
+	})
+	return rsp
 }
 
 // numToDo reports the number of tasks in ts that need to be executed, and the
