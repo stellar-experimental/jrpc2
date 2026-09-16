@@ -176,7 +176,7 @@ func (c *ClientOptions) handleCallback() func(context.Context, *jmessage) []byte
 		// cleaning up the client, can cause the server to stall in a manner that
 		// is difficult to debug.
 		//
-		// See https://github.com/creachadair/jrpc2/issues/41.
+		// See https://github.com/stellar-experimental/jrpc2/issues/41.
 		rsp := &jmessage{ID: req.ID}
 		v, err := panicToError(func() (any, error) {
 			return cb(ctx, &Request{

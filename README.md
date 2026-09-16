@@ -1,22 +1,22 @@
 # jrpc2
 
-[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=yellow)](https://pkg.go.dev/github.com/creachadair/jrpc2)
-[![CI](https://github.com/creachadair/jrpc2/actions/workflows/go-presubmit.yml/badge.svg?event=push&branch=main)](https://github.com/creachadair/jrpc2/actions/workflows/go-presubmit.yml)
+[![GoDoc](https://img.shields.io/static/v1?label=godoc&message=reference&color=yellow)](https://pkg.go.dev/github.com/stellar-experimental/jrpc2)
+[![CI](https://github.com/stellar-experimental/jrpc2/actions/workflows/go-presubmit.yml/badge.svg?event=push&branch=main)](https://github.com/stellar-experimental/jrpc2/actions/workflows/go-presubmit.yml)
 
 This repository provides a Go module that implements a [JSON-RPC 2.0][spec] client and server.
 There is also a working [example in the Go playground](https://go.dev/play/p/JWgZOVJh0nZ).
 
 ## Packages
 
-*  Package [jrpc2](http://godoc.org/github.com/creachadair/jrpc2) implements the base client and server and standard error codes.
+*  Package [jrpc2](http://godoc.org/github.com/stellar-experimental/jrpc2) implements the base client and server and standard error codes.
 
-*  Package [channel](http://godoc.org/github.com/creachadair/jrpc2/channel) defines the communication channel abstraction used by the server & client.
+*  Package [channel](http://godoc.org/github.com/stellar-experimental/jrpc2/channel) defines the communication channel abstraction used by the server & client.
 
-*  Package [handler](http://godoc.org/github.com/creachadair/jrpc2/handler) defines support for adapting functions to service methods.
+*  Package [handler](http://godoc.org/github.com/stellar-experimental/jrpc2/handler) defines support for adapting functions to service methods.
 
-*  Package [jhttp](http://godoc.org/github.com/creachadair/jrpc2/jhttp) allows clients and servers to use HTTP as a transport.
+*  Package [jhttp](http://godoc.org/github.com/stellar-experimental/jrpc2/jhttp) allows clients and servers to use HTTP as a transport.
 
-*  Package [server](http://godoc.org/github.com/creachadair/jrpc2/server) provides support for running a server to handle multiple connections, and an in-memory implementation for testing.
+*  Package [server](http://godoc.org/github.com/stellar-experimental/jrpc2/server) provides support for running a server to handle multiple connections, and an in-memory implementation for testing.
 
 [spec]: http://www.jsonrpc.org/specification
 
