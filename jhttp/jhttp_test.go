@@ -499,6 +499,32 @@ func TestBridge_requestContext(t *testing.T) {
 	})
 }
 
+// Verify that the bridge does not reorder a slice returned by a parse hook,
+// and frames the response by the first request as parsed.
+func TestBridge_parseHookOrder(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		bad := &jrpc2.Error{Code: jrpc2.InvalidRequest, Message: "bad"}
+		jreq := []*jrpc2.ParsedRequest{
+			{Method: "Test1"}, // a valid notification
+			{Batch: true, Error: bad},
+		}
+		b := jhttp.NewBridge(testService, &jhttp.BridgeOptions{
+			ParseRequest: func(*http.Request) ([]*jrpc2.ParsedRequest, error) { return jreq, nil },
+		})
+		defer checkClose(t, b)
+		hsrv, hcli := mtest.NewHTTPServer(t, b)
+
+		got := mustPost(t, hcli, hsrv.URL, "", `{}`, http.StatusOK)
+		const want = `{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"bad"}}`
+		if got != want {
+			t.Errorf("POST body: got %#q, want %#q", got, want)
+		}
+		if jreq[0].Method != "Test1" || jreq[1].Error != bad {
+			t.Error("Parse hook slice was reordered")
+		}
+	})
+}
+
 // Verify that a Getter writes a json.RawMessage result verbatim.
 func TestGetter_rawResult(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {

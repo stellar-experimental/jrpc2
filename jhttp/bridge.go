@@ -78,9 +78,12 @@ func (b Bridge) serveInternal(w http.ResponseWriter, req *http.Request) error {
 	if err != nil {
 		return err
 	}
+	isBatch := len(jreq) != 0 && jreq[0].Batch
 
 	// Statically invalid requests are answered ahead of the rest: the order of
-	// the old client-based bridge, kept for wire parity.
+	// the old client-based bridge, kept for wire parity. A parse hook may
+	// retain jreq, so reorder a copy.
+	jreq = slices.Clone(jreq)
 	slices.SortStableFunc(jreq, func(a, b *jrpc2.ParsedRequest) int {
 		switch {
 		case a.Error != nil && b.Error == nil:
@@ -96,7 +99,7 @@ func (b Bridge) serveInternal(w http.ResponseWriter, req *http.Request) error {
 		w.WriteHeader(http.StatusNoContent) // only notifications, or an empty batch
 		return nil
 	}
-	return b.encodeResponses(jreq[0].Batch || len(rsps) > 1, rsps, w)
+	return b.encodeResponses(isBatch || len(rsps) > 1, rsps, w)
 }
 
 func (b Bridge) parseHTTPRequest(req *http.Request) ([]*jrpc2.ParsedRequest, error) {
