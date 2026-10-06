@@ -173,7 +173,7 @@ var (
 // parts returns the slices whose concatenation is the JSON encoding of j.
 // The payload fields of j are aliased, not copied.
 func (j *jmessage) parts() ([][]byte, error) {
-	parts := make([][]byte, 0, 8) // open, id, method, params, close
+	parts := make([][]byte, 0, 8)
 	parts = append(parts, fragOpen)
 	if len(j.ID) != 0 {
 		parts = append(parts, fragID, j.ID)

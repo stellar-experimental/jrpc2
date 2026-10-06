@@ -96,7 +96,7 @@ func (b Bridge) serveInternal(w http.ResponseWriter, req *http.Request) error {
 		w.WriteHeader(http.StatusNoContent) // only notifications, or an empty batch
 		return nil
 	}
-	return writeResponses(w, jreq[0].Batch || len(rsps) > 1, rsps)
+	return b.encodeResponses(jreq[0].Batch || len(rsps) > 1, rsps, w)
 }
 
 func (b Bridge) parseHTTPRequest(req *http.Request) ([]*jrpc2.ParsedRequest, error) {
@@ -110,58 +110,44 @@ func (b Bridge) parseHTTPRequest(req *http.Request) ([]*jrpc2.ParsedRequest, err
 	return jrpc2.ParseRequests(body)
 }
 
-// writeResponses writes rsps as the body of a 200 response, as an array if
-// batch is true. Results are written as-is, without re-encoding.
-func writeResponses(w http.ResponseWriter, batch bool, rsps []*jrpc2.Response) error {
-	n, err := writeBody(io.Discard, batch, rsps) // check the encoding and measure it
-	if err != nil {
+// encodeResponses writes rsps as the body of a 200 response, as an array if
+// isBatch is true.
+func (b Bridge) encodeResponses(isBatch bool, rsps []*jrpc2.Response, w http.ResponseWriter) error {
+	var n byteCount
+	if err := writeBody(&n, isBatch, rsps); err != nil { // check the encoding and measure it
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(n), 10))
 	w.WriteHeader(http.StatusOK)
-	writeBody(w, batch, rsps) // a write error means the client is gone
+	writeBody(w, isBatch, rsps) // a write error means the client is gone
 	return nil
 }
 
-var (
-	openBracket  = []byte("[")
-	closeBracket = []byte("]")
-	comma        = []byte(",")
-)
-
-// writeBody writes rsps to w, as an array if batch is true, and reports the
-// number of bytes written.
-func writeBody(w io.Writer, batch bool, rsps []*jrpc2.Response) (int64, error) {
-	cw := &countWriter{w: w}
-	if batch {
-		cw.Write(openBracket)
+// writeBody writes rsps to w, as an array if isBatch is true. Results are
+// written as-is, without copying or re-encoding.
+func writeBody(w io.Writer, isBatch bool, rsps []*jrpc2.Response) error {
+	if isBatch {
+		io.WriteString(w, "[")
 	}
 	for i, rsp := range rsps {
 		if i > 0 {
-			cw.Write(comma)
+			io.WriteString(w, ",")
 		}
-		if _, err := rsp.WriteTo(cw); err != nil {
-			return cw.n, err
+		if _, err := rsp.WriteTo(w); err != nil {
+			return err
 		}
 	}
-	if batch {
-		cw.Write(closeBracket)
+	if isBatch {
+		io.WriteString(w, "]")
 	}
-	return cw.n, nil
+	return nil
 }
 
-// A countWriter counts the bytes written to w.
-type countWriter struct {
-	w io.Writer
-	n int64
-}
+// A byteCount is an io.Writer that counts the bytes written to it.
+type byteCount int64
 
-func (c *countWriter) Write(p []byte) (int, error) {
-	n, err := c.w.Write(p)
-	c.n += int64(n)
-	return n, err
-}
+func (c *byteCount) Write(p []byte) (int, error) { *c += byteCount(len(p)); return len(p), nil }
 
 // Close is a no-op retained for compatibility; a Bridge holds no resources.
 func (b Bridge) Close() error { return nil }

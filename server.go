@@ -311,30 +311,28 @@ func (s *Server) checkAndAssignLocked(next jmessages) tasks {
 		ids = append(ids, id)
 	}
 
-	// Phase 2: Set up contexts and assign method handlers.
+	// Phase 2: Assign method handlers and set up contexts.
 	for i, t := range ts {
-		if t.err == nil && t.hreq.method != "" {
-			s.setContext(t, ids[i])
+		id := ids[i]
+		if t.err != nil {
+			// deferred validation error
+		} else if t.hreq.method == "" {
+			t.err = errEmptyMethod
+		} else {
+			s.setContext(t, id)
+			t.m = s.assign(t.ctx, t.hreq.method)
+			if t.m == nil {
+				t.err = errNoSuchMethod.WithData(t.hreq.method)
+			}
 		}
-		s.resolve(t)
+
+		if t.err != nil {
+			s.log("Request check error for %q (params %q): %v",
+				t.hreq.method, string(t.hreq.params), t.err)
+			rpcErrorsCount.Add(1)
+		}
 	}
 	return ts
-}
-
-// resolve assigns a handler to t, or records why t cannot run. The caller
-// must set t.ctx first.
-func (s *Server) resolve(t *task) {
-	if t.err != nil {
-		// deferred validation error
-	} else if t.hreq.method == "" {
-		t.err = errEmptyMethod
-	} else if t.m = s.assign(t.ctx, t.hreq.method); t.m == nil {
-		t.err = errNoSuchMethod.WithData(t.hreq.method)
-	}
-	if t.err != nil {
-		s.log("Request check error for %q (params %q): %v", t.hreq.method, t.hreq.params, t.err)
-		rpcErrorsCount.Add(1)
-	}
 }
 
 // setContext constructs and attaches a request context to t, and reports
@@ -383,16 +381,11 @@ func marshalResult(v any) (json.RawMessage, error) {
 	return json.Marshal(v)
 }
 
-// ServeRequests dispatches reqs to their handlers and returns the responses
-// in request order, without a channel. The server need not be started, and
-// ServeRequests is safe for concurrent use.
-//
-// Requests run concurrently under the server's concurrency limit. A
-// notification produces no response unless its Error field is set, in which
-// case it is answered with a null ID. Duplicate IDs are not checked.
-//
-// Handler contexts derive from ctx and end when the handler returns. The
-// NewContext option and CancelRequest do not apply.
+// ServeRequests dispatches reqs to their handlers on the context ctx, without
+// a channel, and returns the responses in request order. The server need not
+// be started. Requests run concurrently under the server's concurrency limit;
+// duplicate IDs are not checked, and a notification is answered only if its
+// Error field is set.
 func (s *Server) ServeRequests(ctx context.Context, reqs []*ParsedRequest) []*Response {
 	start := time.Now()
 	rpcRequestsCount.Add(int64(len(reqs)))
@@ -403,24 +396,28 @@ func (s *Server) ServeRequests(ctx context.Context, reqs []*ParsedRequest) []*Re
 		t.ctx = context.WithValue(ctx, inboundRequestKey{}, t.hreq)
 		if req.Error != nil {
 			t.err = req.Error
+		} else if req.Method == "" {
+			t.err = errEmptyMethod
+		} else if t.m = s.assign(t.ctx, req.Method); t.m == nil {
+			t.err = errNoSuchMethod.WithData(req.Method)
 		}
-		s.resolve(t)
+		if t.err != nil {
+			s.log("Request check error for %q (params %q): %v",
+				req.Method, string(req.Params), t.err)
+			rpcErrorsCount.Add(1)
+		}
 		ts[i] = t
 	}
 
-	ts.run(func(t *task) {
-		ctx, cancel := context.WithCancel(t.ctx) // ends when the handler returns
-		defer cancel()
-		t.val, t.err = s.invoke(ctx, t.m, t.hreq)
-	})
+	ts.run(func(t *task) { t.val, t.err = s.invoke(t.ctx, t.m, t.hreq) })
 
-	// Notifications are answered only if statically invalid.
 	var rsps []*Response
 	for i, t := range ts {
-		if t.hreq.IsNotification() && reqs[i].Error == nil {
+		if t.hreq.id == nil && reqs[i].Error == nil {
 			continue
 		}
-		rsps = append(rsps, t.response(s.rpcLog))
+		msg := t.response(s.rpcLog)
+		rsps = append(rsps, &Response{id: string(msg.ID), err: msg.E, result: msg.R})
 	}
 	s.log("Completed %d requests [%v elapsed]", len(reqs), time.Since(start))
 	return rsps
@@ -823,33 +820,35 @@ func (ts tasks) responses(rpcLog RPCLogger) jmessages {
 				continue
 			}
 		}
-		msg := task.response(rpcLog).message()
-		msg.batch = task.batch
-		if task.m == nil {
-			// No method was ever assigned for this task, so it was never run.
-			msg.err = errTaskNotExecuted
-		}
-		rsps = append(rsps, msg)
+		rsps = append(rsps, task.response(rpcLog))
 	}
 	return rsps
 }
 
-// response constructs the response to t and logs it to rpcLog.
-func (t *task) response(rpcLog RPCLogger) *Response {
-	rsp := &Response{id: "null"}
-	if t.hreq.id != nil {
-		rsp.id = string(t.hreq.id)
+// response constructs the response message for t and logs it to rpcLog.
+func (t *task) response(rpcLog RPCLogger) *jmessage {
+	rsp := &jmessage{ID: t.hreq.id, batch: t.batch}
+	if rsp.ID == nil {
+		rsp.ID = json.RawMessage("null")
+	}
+	if t.m == nil {
+		// No method was ever assigned for this task, so it was never run.
+		rsp.err = errTaskNotExecuted
 	}
 	if t.err == nil {
-		rsp.result = t.val
+		rsp.R = t.val
 	} else if e, ok := t.err.(*Error); ok {
-		rsp.err = e
+		rsp.E = e
 	} else if c := ErrorCode(t.err); c != NoError {
-		rsp.err = &Error{Code: c, Message: t.err.Error()}
+		rsp.E = &Error{Code: c, Message: t.err.Error()}
 	} else {
-		rsp.err = &Error{Code: InternalError, Message: t.err.Error()}
+		rsp.E = &Error{Code: InternalError, Message: t.err.Error()}
 	}
-	rpcLog.LogResponse(t.ctx, rsp)
+	rpcLog.LogResponse(t.ctx, &Response{
+		id:     string(rsp.ID),
+		err:    rsp.E,
+		result: rsp.R,
+	})
 	return rsp
 }
 

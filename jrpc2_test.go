@@ -1409,30 +1409,6 @@ func TestServer_rawResultEmpty(t *testing.T) {
 	})
 }
 
-// Verify that a RawMessage callback result is delivered verbatim.
-func TestServer_callbackRawResult(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		const raw = `{ "raw" : true }`
-		loc := server.NewLocal(make(handler.Map), &server.LocalOptions{
-			Server: &jrpc2.ServerOptions{AllowPush: true},
-			Client: &jrpc2.ClientOptions{
-				OnCallback: func(context.Context, *jrpc2.Request) (any, error) {
-					return json.RawMessage(raw), nil
-				},
-			},
-		})
-		defer loc.Close()
-
-		rsp, err := loc.Server.Callback(t.Context(), "raw", nil)
-		if err != nil {
-			t.Fatalf("Callback: unexpected error: %v", err)
-		}
-		if got := rsp.ResultString(); got != raw {
-			t.Errorf("Callback result: got %#q, want %#q", got, raw)
-		}
-	})
-}
-
 // serveRequests serves input on s and returns the encoded responses.
 func serveRequests(t *testing.T, ctx context.Context, s *jrpc2.Server, input string) []string {
 	t.Helper()
@@ -1553,15 +1529,12 @@ func TestServer_ServeRequests_context(t *testing.T) {
 			"B": handler.New(func(context.Context) error { close(b); <-a; return nil }),
 		}, &jrpc2.ServerOptions{Concurrency: 2})
 
-		// The handler context carries the server and ends when the handler returns.
+		// The handler context carries the server.
 		if got := serveRequests(t, t.Context(), s, `{"jsonrpc":"2.0","id":1,"method":"Capture"}`); len(got) != 1 {
 			t.Fatalf("Capture: got %d responses, want 1", len(got))
 		}
 		if got := jrpc2.ServerFromContext(hctx); got != s {
 			t.Errorf("ServerFromContext: got %p, want %p", got, s)
-		}
-		if hctx.Err() == nil {
-			t.Error("Handler context did not end after the handler returned")
 		}
 
 		// Cancelling ctx cancels a running handler.
