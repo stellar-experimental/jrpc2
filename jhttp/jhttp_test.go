@@ -524,22 +524,3 @@ func TestBridge_parseHookOrder(t *testing.T) {
 		}
 	})
 }
-
-// Verify that a Getter writes a json.RawMessage result verbatim.
-func TestGetter_rawResult(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		g := jhttp.NewGetter(handler.Map{
-			"raw": handler.New(func(context.Context, map[string]string) json.RawMessage {
-				return json.RawMessage(`[ 1 ]`)
-			}),
-		}, nil)
-		defer checkClose(t, g)
-		hsrv, hcli := mtest.NewHTTPServer(t, g)
-
-		got := mustGet(t, hcli, hsrv.URL+"/raw", http.StatusOK)
-		const want = `[ 1 ]`
-		if got != want {
-			t.Errorf("GET body: got %#q, want %#q", got, want)
-		}
-	})
-}

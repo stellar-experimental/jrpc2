@@ -152,11 +152,19 @@ type byteCount int64
 
 func (c *byteCount) Write(p []byte) (int, error) { *c += byteCount(len(p)); return len(p), nil }
 
-// Close is a no-op retained for compatibility; a Bridge holds no resources.
-func (b Bridge) Close() error { return nil }
+// Close closes the Getter for GET requests, if any, and reports its exit
+// status. Serving POST requests holds no resources.
+func (b Bridge) Close() error {
+	if b.getter != nil {
+		return b.getter.Close()
+	}
+	return nil
+}
 
 // NewBridge constructs a new Bridge that dispatches HTTP requests to a server
-// on mux. Handlers run on the goroutine and context of their HTTP request.
+// on mux. POST requests are served by [jrpc2.Server.ServeRequests] on the HTTP
+// request context; ServerOptions.NewContext does not apply. GET requests, if
+// enabled, are served by a [Getter] that runs until the bridge is closed.
 // The server cannot push calls or notifications to the remote client.
 func NewBridge(mux jrpc2.Assigner, opts *BridgeOptions) Bridge {
 	b := Bridge{
@@ -164,7 +172,12 @@ func NewBridge(mux jrpc2.Assigner, opts *BridgeOptions) Bridge {
 		parseReq: opts.parseRequest(),
 	}
 	if pget := opts.parseGETRequest(); pget != nil {
-		b.getter = &Getter{srv: b.srv, parseReq: pget}
+		g := NewGetter(mux, &GetterOptions{
+			Client:       opts.clientOptions(),
+			Server:       opts.serverOptions(),
+			ParseRequest: pget,
+		})
+		b.getter = &g
 	}
 	return b
 }
@@ -172,7 +185,7 @@ func NewBridge(mux jrpc2.Assigner, opts *BridgeOptions) Bridge {
 // BridgeOptions are optional settings for a Bridge. A nil pointer is ready for
 // use and provides default values as described.
 type BridgeOptions struct {
-	// Deprecated: The bridge no longer uses a client. This field is ignored.
+	// Options for the client of the Getter for GET requests (default nil).
 	Client *jrpc2.ClientOptions
 
 	// Options for the bridge server (default nil).
@@ -194,6 +207,13 @@ type BridgeOptions struct {
 	// parse function, and are not passed to a ParseRequest hook even if one is
 	// defined.
 	ParseGETRequest func(*http.Request) (string, any, error)
+}
+
+func (o *BridgeOptions) clientOptions() *jrpc2.ClientOptions {
+	if o == nil {
+		return nil
+	}
+	return o.Client
 }
 
 func (o *BridgeOptions) serverOptions() *jrpc2.ServerOptions {
