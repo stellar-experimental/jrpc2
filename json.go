@@ -5,7 +5,6 @@ package jrpc2
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 )
 
 // ParseRequests parses either a single request or a batch of requests from
@@ -52,12 +51,11 @@ func (p *ParsedRequest) ToRequest() *Request {
 	if p == nil || p.Error != nil {
 		return nil
 	}
-	return p.request()
-}
-
-// request converts p to a Request without checking p.Error.
-func (p *ParsedRequest) request() *Request {
-	return &Request{id: fixID(json.RawMessage(p.ID)), method: p.Method, params: p.Params}
+	return &Request{
+		id:     fixID(json.RawMessage(p.ID)),
+		method: p.Method,
+		params: p.Params,
+	}
 }
 
 // jmessages is either a single protocol message or an array of protocol
@@ -160,23 +158,12 @@ func (j *jmessage) fail(code Code, msg string) {
 	}
 }
 
-var (
-	fragOpen   = []byte(`{"jsonrpc":"2.0"`)
-	fragID     = []byte(`,"id":`)
-	fragMethod = []byte(`,"method":`)
-	fragParams = []byte(`,"params":`)
-	fragResult = []byte(`,"result":`)
-	fragError  = []byte(`,"error":`)
-	fragClose  = []byte(`}`)
-)
-
-// parts returns the slices whose concatenation is the JSON encoding of j.
-// The payload fields of j are aliased, not copied.
-func (j *jmessage) parts() ([][]byte, error) {
-	parts := make([][]byte, 0, 8)
-	parts = append(parts, fragOpen)
+func (j *jmessage) toJSON() ([]byte, error) {
+	var sb bytes.Buffer
+	sb.WriteString(`{"jsonrpc":"2.0"`)
 	if len(j.ID) != 0 {
-		parts = append(parts, fragID, j.ID)
+		sb.WriteString(`,"id":`)
+		sb.Write(j.ID)
 	}
 	switch {
 	case j.M != "":
@@ -184,47 +171,28 @@ func (j *jmessage) parts() ([][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		parts = append(parts, fragMethod, m)
+		sb.WriteString(`,"method":`)
+		sb.Write(m)
 		if len(j.P) != 0 {
-			parts = append(parts, fragParams, j.P)
+			sb.WriteString(`,"params":`)
+			sb.Write(j.P)
 		}
 
 	case len(j.R) != 0:
-		parts = append(parts, fragResult, j.R)
+		sb.WriteString(`,"result":`)
+		sb.Write(j.R)
 
 	case j.E != nil:
 		e, err := json.Marshal(j.E)
 		if err != nil {
 			return nil, err
 		}
-		parts = append(parts, fragError, e)
+		sb.WriteString(`,"error":`)
+		sb.Write(e)
 	}
-	return append(parts, fragClose), nil
-}
 
-func (j *jmessage) toJSON() ([]byte, error) {
-	parts, err := j.parts()
-	if err != nil {
-		return nil, err
-	}
-	return bytes.Join(parts, nil), nil
-}
-
-// writeTo writes the JSON encoding of j to w without copying its payload.
-func (j *jmessage) writeTo(w io.Writer) (int64, error) {
-	parts, err := j.parts()
-	if err != nil {
-		return 0, err
-	}
-	var n int64
-	for _, p := range parts {
-		m, err := w.Write(p)
-		n += int64(m)
-		if err != nil {
-			return n, err
-		}
-	}
-	return n, nil
+	sb.WriteByte('}')
+	return sb.Bytes(), nil
 }
 
 func (j *jmessage) parseJSON(data []byte) error {
@@ -301,14 +269,14 @@ func (j *jmessage) isRequestOrNotification() bool { return j.M != "" && j.E == n
 // isNotification reports whether j is a notification
 func (j *jmessage) isNotification() bool { return j.isRequestOrNotification() && fixID(j.ID) == nil }
 
-// fixID filters id, treating "null" and empty as an unset ID.  Some
+// fixID filters id, treating "null" as a synonym for an unset ID.  Some
 // implementations (possibly a vestige of v1) emit "null" as an ID for
 // notifications.
 func fixID(id json.RawMessage) json.RawMessage {
-	if len(id) == 0 || isNull(id) {
-		return nil
+	if !isNull(id) {
+		return id
 	}
-	return id
+	return nil
 }
 
 // sender is the subset of channel.Channel needed to send messages.

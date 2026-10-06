@@ -9,9 +9,7 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
-	"runtime"
 	"sort"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1332,81 +1330,38 @@ func TestClient_IsStopped(t *testing.T) {
 	})
 }
 
-// Verify that a json.RawMessage result is delivered verbatim.
-func TestServer_rawResult(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		srv, cli := channel.Direct()
-		s := jrpc2.NewServer(handler.Map{
-			"Raw": func(context.Context, *jrpc2.Request) (any, error) {
-				return json.RawMessage(`{ "html": "<b>&</b>",  "n": 1 }`), nil
-			},
-			"Typed": handler.New(func(context.Context) json.RawMessage {
-				return json.RawMessage(`[1,  2,3]`)
-			}),
-			"Nil": func(context.Context, *jrpc2.Request) (any, error) {
-				return json.RawMessage(nil), nil
-			},
-			"Struct": handler.New(func(context.Context) map[string]string {
-				return map[string]string{"html": "<b>&</b>"}
-			}),
-		}, nil).Start(srv)
-		defer func() {
-			cli.Close()
-			if err := s.Wait(); err != nil {
-				t.Errorf("Server wait: unexpected error %v", err)
-			}
-		}()
+// Verify how ServeRequests encodes json.RawMessage results.
+func TestServer_ServeRequests_rawResult(t *testing.T) {
+	s := jrpc2.NewServer(handler.Map{
+		"Raw": func(context.Context, *jrpc2.Request) (any, error) {
+			return json.RawMessage(`{ "html": "<b>&</b>",  "n": 1 }`), nil
+		},
+		"Nil":   handler.New(func(context.Context) json.RawMessage { return nil }),
+		"Empty": handler.New(func(context.Context) json.RawMessage { return json.RawMessage{} }),
+		"Struct": handler.New(func(context.Context) map[string]string {
+			return map[string]string{"html": "<b>&</b>"}
+		}),
+	}, nil)
+	serve := func(method string) *jrpc2.Response {
+		return s.ServeRequests(t.Context(), []*jrpc2.ParsedRequest{{ID: "1", Method: method}})[0]
+	}
 
-		escaped, err := json.Marshal(map[string]string{"html": "<b>&</b>"})
-		if err != nil {
-			t.Fatalf("Marshal: %v", err)
+	escaped, _ := json.Marshal(map[string]string{"html": "<b>&</b>"})
+	tests := []struct{ method, want string }{
+		{"Raw", `{ "html": "<b>&</b>",  "n": 1 }`}, // verbatim
+		{"Nil", `null`},
+		{"Struct", string(escaped)}, // encoded as usual
+	}
+	for _, test := range tests {
+		if got := serve(test.method).ResultString(); got != test.want {
+			t.Errorf("%s: got result %#q, want %#q", test.method, got, test.want)
 		}
+	}
 
-		tests := []struct {
-			input, want string
-		}{
-			{`{"jsonrpc":"2.0","id":1,"method":"Raw"}`,
-				`{"jsonrpc":"2.0","id":1,"result":{ "html": "<b>&</b>",  "n": 1 }}`},
-			{`{"jsonrpc":"2.0","id":2,"method":"Typed"}`,
-				`{"jsonrpc":"2.0","id":2,"result":[1,  2,3]}`},
-			{`{"jsonrpc":"2.0","id":3,"method":"Nil"}`,
-				`{"jsonrpc":"2.0","id":3,"result":null}`},
-			{`{"jsonrpc":"2.0","id":4,"method":"Struct"}`,
-				`{"jsonrpc":"2.0","id":4,"result":` + string(escaped) + `}`},
-		}
-		for _, test := range tests {
-			if err := cli.Send([]byte(test.input)); err != nil {
-				t.Fatalf("Send %#q failed: %v", test.input, err)
-			}
-			raw, err := cli.Recv()
-			if err != nil {
-				t.Fatalf("Recv failed: %v", err)
-			}
-			if got := string(raw); got != test.want {
-				t.Errorf("Simulated call %#q: got %#q, want %#q", test.input, got, test.want)
-			}
-		}
-	})
-}
-
-// Verify that an empty RawMessage result is still an encoding error.
-func TestServer_rawResultEmpty(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		loc := server.NewLocal(handler.Map{
-			"Empty": func(context.Context, *jrpc2.Request) (any, error) {
-				return json.RawMessage{}, nil
-			},
-		}, nil)
-		defer loc.Close()
-
-		rsp, err := loc.Client.Call(t.Context(), "Empty", nil)
-		if err == nil {
-			t.Fatalf("Call Empty: got %v, want error", rsp)
-		}
-		if got := jrpc2.ErrorCode(err); got != jrpc2.SystemError {
-			t.Errorf("Call Empty: got code %v, want %v", got, jrpc2.SystemError)
-		}
-	})
+	// An empty RawMessage is still an encoding error.
+	if got := serve("Empty").Error(); got == nil || got.Code != jrpc2.SystemError {
+		t.Errorf("Empty: got error %v, want code %v", got, jrpc2.SystemError)
+	}
 }
 
 // serveRequests serves input on s and returns the encoded responses.
@@ -1589,26 +1544,6 @@ func TestServer_ServeRequests_builtin(t *testing.T) {
 	}
 }
 
-// Verify that ToRequest distinguishes notifications from calls.
-func TestParsedRequest_ToRequest(t *testing.T) {
-	reqs, err := jrpc2.ParseRequests([]byte(`[
-	   {"jsonrpc":"2.0","method":"N"},
-	   {"jsonrpc":"2.0","id":5,"method":"C","params":[1]},
-	   {"jsonrpc":"1.0","id":6,"method":"X"}]`))
-	if err != nil {
-		t.Fatalf("ParseRequests: %v", err)
-	}
-	if n := reqs[0].ToRequest(); n == nil || !n.IsNotification() || n.ID() != "" || n.Method() != "N" {
-		t.Errorf("ToRequest(notification): got %+v, want a notification for N", n)
-	}
-	if c := reqs[1].ToRequest(); c == nil || c.IsNotification() || c.ID() != "5" || c.Method() != "C" || c.ParamString() != "[1]" {
-		t.Errorf("ToRequest(call): got %+v, want call 5 to C with params [1]", c)
-	}
-	if x := reqs[2].ToRequest(); x != nil {
-		t.Errorf("ToRequest(invalid): got %+v, want nil", x)
-	}
-}
-
 // Verify that WriteTo produces the same encoding as MarshalJSON.
 func TestResponse_WriteTo(t *testing.T) {
 	s := jrpc2.NewServer(handler.Map{
@@ -1626,7 +1561,9 @@ func TestResponse_WriteTo(t *testing.T) {
 	if len(rsps) != 3 {
 		t.Fatalf("Got %d responses, want 3", len(rsps))
 	}
-	for _, rsp := range rsps {
+	noID := *rsps[0]
+	noID.SetID("")
+	for _, rsp := range append(rsps, &noID) {
 		want, err := rsp.MarshalJSON()
 		if err != nil {
 			t.Fatalf("MarshalJSON: %v", err)
@@ -1640,25 +1577,4 @@ func TestResponse_WriteTo(t *testing.T) {
 			t.Errorf("WriteTo: got (%#q, %d), want (%#q, %d)", got, n, want, len(want))
 		}
 	}
-}
-
-// Verify that a negative Concurrency removes the handler limit.
-func TestServer_unboundedConcurrency(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		n := runtime.NumCPU() + 1
-		var barrier sync.WaitGroup
-		barrier.Add(n)
-		s := jrpc2.NewServer(handler.Map{
-			// Each call blocks until all n are running at once.
-			"Wait": handler.New(func(context.Context) error { barrier.Done(); barrier.Wait(); return nil }),
-		}, &jrpc2.ServerOptions{Concurrency: -1})
-
-		reqs := make([]*jrpc2.ParsedRequest, n)
-		for i := range reqs {
-			reqs[i] = &jrpc2.ParsedRequest{ID: strconv.Itoa(i + 1), Method: "Wait"}
-		}
-		if got := len(s.ServeRequests(t.Context(), reqs)); got != n {
-			t.Errorf("Got %d responses, want %d", got, n)
-		}
-	})
 }
