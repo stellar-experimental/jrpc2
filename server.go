@@ -240,35 +240,16 @@ func (s *Server) dispatchLocked(next jmessages, ch sender) func() error {
 	tasks := s.checkAndAssignLocked(next)
 
 	// Ensure all notifications already issued have completed; see #24.
-	todo, notes := tasks.numToDo()
+	_, notes := tasks.numToDo()
 	s.waitForBarrier(notes)
 
 	return func() error {
-		var wg sync.WaitGroup
-		for _, t := range tasks {
-			if t.err != nil {
-				continue // nothing to do here; this task has already failed
+		tasks.run(func(t *task) {
+			t.val, t.err = s.invoke(t.ctx, t.m, t.hreq)
+			if t.hreq.IsNotification() {
+				s.nbar.Done()
 			}
-
-			todo--
-			if todo == 0 {
-				t.val, t.err = s.invoke(t.ctx, t.m, t.hreq)
-				if t.hreq.IsNotification() {
-					s.nbar.Done()
-				}
-				break
-			}
-			t := t
-			wg.Go(func() {
-				t.val, t.err = s.invoke(t.ctx, t.m, t.hreq)
-				if t.hreq.IsNotification() {
-					s.nbar.Done()
-				}
-			})
-		}
-
-		// Wait for all the handlers to return, then deliver any responses.
-		wg.Wait()
+		})
 		return s.deliver(tasks.responses(s.rpcLog), ch, time.Since(start))
 	}
 }
@@ -330,28 +311,30 @@ func (s *Server) checkAndAssignLocked(next jmessages) tasks {
 		ids = append(ids, id)
 	}
 
-	// Phase 2: Assign method handlers and set up contexts.
+	// Phase 2: Set up contexts and assign method handlers.
 	for i, t := range ts {
-		id := ids[i]
-		if t.err != nil {
-			// deferred validation error
-		} else if t.hreq.method == "" {
-			t.err = errEmptyMethod
-		} else {
-			s.setContext(t, id)
-			t.m = s.assign(t.ctx, t.hreq.method)
-			if t.m == nil {
-				t.err = errNoSuchMethod.WithData(t.hreq.method)
-			}
+		if t.err == nil && t.hreq.method != "" {
+			s.setContext(t, ids[i])
 		}
-
-		if t.err != nil {
-			s.log("Request check error for %q (params %q): %v",
-				t.hreq.method, string(t.hreq.params), t.err)
-			rpcErrorsCount.Add(1)
-		}
+		s.resolve(t)
 	}
 	return ts
+}
+
+// resolve assigns a handler to t, or records why t cannot run. The caller
+// must set t.ctx first.
+func (s *Server) resolve(t *task) {
+	if t.err != nil {
+		// deferred validation error
+	} else if t.hreq.method == "" {
+		t.err = errEmptyMethod
+	} else if t.m = s.assign(t.ctx, t.hreq.method); t.m == nil {
+		t.err = errNoSuchMethod.WithData(t.hreq.method)
+	}
+	if t.err != nil {
+		s.log("Request check error for %q (params %q): %v", t.hreq.method, t.hreq.params, t.err)
+		rpcErrorsCount.Add(1)
+	}
 }
 
 // setContext constructs and attaches a request context to t, and reports
@@ -416,58 +399,28 @@ func (s *Server) ServeRequests(ctx context.Context, reqs []*ParsedRequest) []*Re
 
 	ts := make(tasks, len(reqs))
 	for i, req := range reqs {
-		t := &task{
-			hreq:  &Request{method: req.Method, params: req.Params},
-			batch: req.Batch,
-		}
-		if req.ID != "" {
-			t.hreq.id = json.RawMessage(req.ID)
-		}
+		t := &task{hreq: req.request()}
 		t.ctx = context.WithValue(ctx, inboundRequestKey{}, t.hreq)
 		if req.Error != nil {
 			t.err = req.Error
-		} else if req.Method == "" {
-			t.err = errEmptyMethod
-		} else if t.m = s.assign(t.ctx, req.Method); t.m == nil {
-			t.err = errNoSuchMethod.WithData(req.Method)
 		}
-		if t.err != nil {
-			s.log("Request check error for %q (params %q): %v",
-				req.Method, string(req.Params), t.err)
-			rpcErrorsCount.Add(1)
-		}
+		s.resolve(t)
 		ts[i] = t
 	}
 
-	// Run the last handler on the calling goroutine.
-	run := func(t *task) {
-		ctx, cancel := context.WithCancel(t.ctx)
+	ts.run(func(t *task) {
+		ctx, cancel := context.WithCancel(t.ctx) // ends when the handler returns
 		defer cancel()
 		t.val, t.err = s.invoke(ctx, t.m, t.hreq)
-	}
-	todo, _ := ts.numToDo()
-	var wg sync.WaitGroup
-	for _, t := range ts {
-		if t.err != nil {
-			continue
-		}
-		todo--
-		if todo == 0 {
-			run(t)
-			break
-		}
-		wg.Go(func() { run(t) })
-	}
-	wg.Wait()
+	})
 
 	// Notifications are answered only if statically invalid.
 	var rsps []*Response
 	for i, t := range ts {
-		if t.hreq.id == nil && reqs[i].Error == nil {
+		if t.hreq.IsNotification() && reqs[i].Error == nil {
 			continue
 		}
-		msg := t.response(s.rpcLog)
-		rsps = append(rsps, &Response{id: string(msg.ID), err: msg.E, result: msg.R})
+		rsps = append(rsps, t.response(s.rpcLog))
 	}
 	s.log("Completed %d requests [%v elapsed]", len(reqs), time.Since(start))
 	return rsps
@@ -870,36 +823,53 @@ func (ts tasks) responses(rpcLog RPCLogger) jmessages {
 				continue
 			}
 		}
-		rsps = append(rsps, task.response(rpcLog))
+		msg := task.response(rpcLog).message()
+		msg.batch = task.batch
+		if task.m == nil {
+			// No method was ever assigned for this task, so it was never run.
+			msg.err = errTaskNotExecuted
+		}
+		rsps = append(rsps, msg)
 	}
 	return rsps
 }
 
-// response constructs the response message for t and logs it to rpcLog.
-func (t *task) response(rpcLog RPCLogger) *jmessage {
-	rsp := &jmessage{ID: t.hreq.id, batch: t.batch}
-	if rsp.ID == nil {
-		rsp.ID = json.RawMessage("null")
-	}
-	if t.m == nil {
-		// No method was ever assigned for this task, so it was never run.
-		rsp.err = errTaskNotExecuted
+// response constructs the response to t and logs it to rpcLog.
+func (t *task) response(rpcLog RPCLogger) *Response {
+	rsp := &Response{id: "null"}
+	if t.hreq.id != nil {
+		rsp.id = string(t.hreq.id)
 	}
 	if t.err == nil {
-		rsp.R = t.val
+		rsp.result = t.val
 	} else if e, ok := t.err.(*Error); ok {
-		rsp.E = e
+		rsp.err = e
 	} else if c := ErrorCode(t.err); c != NoError {
-		rsp.E = &Error{Code: c, Message: t.err.Error()}
+		rsp.err = &Error{Code: c, Message: t.err.Error()}
 	} else {
-		rsp.E = &Error{Code: InternalError, Message: t.err.Error()}
+		rsp.err = &Error{Code: InternalError, Message: t.err.Error()}
 	}
-	rpcLog.LogResponse(t.ctx, &Response{
-		id:     string(rsp.ID),
-		err:    rsp.E,
-		result: rsp.R,
-	})
+	rpcLog.LogResponse(t.ctx, rsp)
 	return rsp
+}
+
+// run calls body for each task in ts without an error, the last on the
+// calling goroutine, and waits for all of them to finish.
+func (ts tasks) run(body func(*task)) {
+	todo, _ := ts.numToDo()
+	var wg sync.WaitGroup
+	for _, t := range ts {
+		if t.err != nil {
+			continue // nothing to do here; this task has already failed
+		}
+		todo--
+		if todo == 0 {
+			body(t)
+			break
+		}
+		wg.Go(func() { body(t) })
+	}
+	wg.Wait()
 }
 
 // numToDo reports the number of tasks in ts that need to be executed, and the
