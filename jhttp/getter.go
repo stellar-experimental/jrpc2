@@ -78,9 +78,7 @@ func (g Getter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, status, err)
 		return
 	}
-	var result json.RawMessage
-	rsp.UnmarshalResult(&result) // cannot fail: rsp is not an error
-	writeRaw(w, http.StatusOK, result)
+	writeRaw(w, http.StatusOK, []byte(rsp.ResultString()))
 }
 
 // parsedRequest constructs a call to method with the given parameters, which

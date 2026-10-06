@@ -79,7 +79,8 @@ func (b Bridge) serveInternal(w http.ResponseWriter, req *http.Request) error {
 		return err
 	}
 
-	// Statically invalid requests are answered ahead of the rest.
+	// Statically invalid requests are answered ahead of the rest: the order of
+	// the old client-based bridge, kept for wire parity.
 	slices.SortStableFunc(jreq, func(a, b *jrpc2.ParsedRequest) int {
 		switch {
 		case a.Error != nil && b.Error == nil:
@@ -129,39 +130,36 @@ var (
 	comma        = []byte(",")
 )
 
+// writeBody writes rsps to w, as an array if batch is true, and reports the
+// number of bytes written.
 func writeBody(w io.Writer, batch bool, rsps []*jrpc2.Response) (int64, error) {
-	sw := &stickyWriter{w: w}
+	cw := &countWriter{w: w}
 	if batch {
-		sw.Write(openBracket)
+		cw.Write(openBracket)
 	}
 	for i, rsp := range rsps {
 		if i > 0 {
-			sw.Write(comma)
+			cw.Write(comma)
 		}
-		if _, err := rsp.WriteTo(sw); err != nil {
-			return sw.n, err
+		if _, err := rsp.WriteTo(cw); err != nil {
+			return cw.n, err
 		}
 	}
 	if batch {
-		sw.Write(closeBracket)
+		cw.Write(closeBracket)
 	}
-	return sw.n, sw.err
+	return cw.n, nil
 }
 
-// A stickyWriter counts the bytes written to w and stops at the first error.
-type stickyWriter struct {
-	w   io.Writer
-	n   int64
-	err error
+// A countWriter counts the bytes written to w.
+type countWriter struct {
+	w io.Writer
+	n int64
 }
 
-func (s *stickyWriter) Write(p []byte) (int, error) {
-	if s.err != nil {
-		return 0, s.err
-	}
-	n, err := s.w.Write(p)
-	s.n += int64(n)
-	s.err = err
+func (c *countWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
 	return n, err
 }
 
