@@ -18,8 +18,8 @@ import (
 // for duplicate IDs, support [Server.CancelRequest], or count bytes in
 // [ServerMetrics].
 //
-// A non-empty [json.RawMessage] result is sent verbatim, without validation;
-// the handler must not modify it after returning.
+// A non-empty [json.RawMessage] result is passed through verbatim, without
+// validation or copying, so the handler must not modify it after returning.
 func (s *Server) ServeRequests(ctx context.Context, reqs []*ParsedRequest) []*Response {
 	start := time.Now()
 	rpcRequestsCount.Add(int64(len(reqs)))
