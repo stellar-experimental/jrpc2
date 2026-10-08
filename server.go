@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/creachadair/jrpc2/channel"
 	"github.com/creachadair/mds/queue"
+	"github.com/stellar-experimental/jrpc2/channel"
 	"golang.org/x/sync/semaphore"
 )
 

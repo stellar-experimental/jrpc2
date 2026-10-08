@@ -9,7 +9,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/creachadair/jrpc2"
+	"github.com/stellar-experimental/jrpc2"
 )
 
 type testCoder jrpc2.Code

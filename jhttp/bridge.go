@@ -5,14 +5,14 @@
 package jhttp
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
+	"slices"
+	"strconv"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/server"
+	"github.com/stellar-experimental/jrpc2"
 )
 
 // A Bridge is a [http.Handler] that bridges requests to a JSON-RPC server.
@@ -35,7 +35,7 @@ import (
 // response is 200 (OK) for ordinary requests or 204 (No Response) for
 // notifications, and the response body contains the JSON-RPC response.
 type Bridge struct {
-	local    server.Local
+	srv      *jrpc2.Server
 	parseReq func(*http.Request) ([]*jrpc2.ParsedRequest, error)
 	getter   *Getter
 }
@@ -74,78 +74,32 @@ func (b Bridge) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (b Bridge) serveInternal(w http.ResponseWriter, req *http.Request) error {
-	// The HTTP request requires a response, but the server will not reply if
-	// all the requests are notifications. Check whether we have any calls
-	// needing a response, and choose whether to wait for a reply based on that.
 	jreq, err := b.parseHTTPRequest(req)
 	if err != nil {
 		return err
 	}
 	isBatch := len(jreq) != 0 && jreq[0].Batch
 
-	// Because the bridge shares the JSON-RPC client between potentially many
-	// HTTP clients, we must virtualize the ID space for requests to preserve
-	// the HTTP client's assignment of IDs.
-	//
-	// To do this, we keep track of the inbound ID for each request so that we
-	// can map the responses back. This takes advantage of the fact that the
-	// *jrpc2.Client detangles batch order so that responses come back in the
-	// same order (omitting notifications) even if the server response did not
-	// preserve order.
-	//
-	// Requests that are already known to be invalid are converted to error
-	// responses directly. Besides preventing the server from doing the same
-	// error check a second time, this avoids the issue that a remapped ID may
-	// obcure an invalid request ID (see #80).
-	var results []json.RawMessage
-
-	// Generate request specifications for the client.
-	var inboundID []string // for calls
-	var spec []jrpc2.Spec  // requests & notifications
-	for _, req := range jreq {
-		if req.Error != nil {
-			// Filter out statically invalid requests.
-			msg, err := marshalError(req)
-			if err != nil {
-				return err
-			}
-			results = append(results, msg)
-			continue
+	// Statically invalid requests are answered ahead of the rest: the order of
+	// the old client-based bridge, kept for wire parity. A parse hook may
+	// retain jreq, so reorder a copy.
+	jreq = slices.Clone(jreq)
+	slices.SortStableFunc(jreq, func(a, b *jrpc2.ParsedRequest) int {
+		switch {
+		case a.Error != nil && b.Error == nil:
+			return -1
+		case a.Error == nil && b.Error != nil:
+			return 1
 		}
+		return 0
+	})
 
-		spec = append(spec, jrpc2.Spec{
-			Method: req.Method,
-			Notify: req.ID == "",
-			Params: req.Params,
-		})
-		if req.ID != "" {
-			inboundID = append(inboundID, req.ID)
-		}
-	}
-
-	if len(spec) != 0 {
-		rsps, err := b.local.Client.Batch(req.Context(), spec)
-		if err != nil {
-			return err
-		}
-		for i, rsp := range rsps {
-			// Map the responses back to their original IDs and marshal to JSON.
-			rsp.SetID(inboundID[i])
-			msg, err := json.Marshal(rsp)
-			if err != nil {
-				return err
-			}
-			results = append(results, msg)
-		}
-	}
-
-	// If all the requests were notifications and there were no invalid ones,
-	// report success without responses.
-	if len(results) == 0 {
-		w.WriteHeader(http.StatusNoContent)
+	rsps := b.srv.ServeRequests(req.Context(), jreq)
+	if len(rsps) == 0 {
+		w.WriteHeader(http.StatusNoContent) // only notifications, or an empty batch
 		return nil
 	}
-	return b.encodeResponses(isBatch, results, w)
+	return b.encodeResponses(isBatch || len(rsps) > 1, rsps, w)
 }
 
 func (b Bridge) parseHTTPRequest(req *http.Request) ([]*jrpc2.ParsedRequest, error) {
@@ -159,39 +113,62 @@ func (b Bridge) parseHTTPRequest(req *http.Request) ([]*jrpc2.ParsedRequest, err
 	return jrpc2.ParseRequests(body)
 }
 
-func (b Bridge) encodeResponses(isBatch bool, rsps []json.RawMessage, w http.ResponseWriter) error {
-	if len(rsps) == 1 && !isBatch {
-		writeJSON(w, http.StatusOK, rsps[0])
-	} else {
-		writeJSON(w, http.StatusOK, rsps)
+// encodeResponses writes rsps as the body of a 200 response, as an array if
+// isBatch is true.
+func (b Bridge) encodeResponses(isBatch bool, rsps []*jrpc2.Response, w http.ResponseWriter) error {
+	var n byteCount
+	if err := writeBody(&n, isBatch, rsps); err != nil { // check the encoding and measure it
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(n), 10))
+	w.WriteHeader(http.StatusOK)
+	writeBody(w, isBatch, rsps) // a write error means the client is gone
+	return nil
+}
+
+// writeBody writes rsps to w, as an array if isBatch is true. Results are
+// written as-is, without copying or re-encoding.
+func writeBody(w io.Writer, isBatch bool, rsps []*jrpc2.Response) error {
+	if isBatch {
+		io.WriteString(w, "[")
+	}
+	for i, rsp := range rsps {
+		if i > 0 {
+			io.WriteString(w, ",")
+		}
+		if _, err := rsp.WriteTo(w); err != nil {
+			return err
+		}
+	}
+	if isBatch {
+		io.WriteString(w, "]")
 	}
 	return nil
 }
 
-// Close closes the channel to the server, waits for the server to exit, and
-// reports its exit status.
+// A byteCount is an io.Writer that counts the bytes written to it.
+type byteCount int64
+
+func (c *byteCount) Write(p []byte) (int, error) { *c += byteCount(len(p)); return len(p), nil }
+
+// Close closes the Getter for GET requests, if any, and reports its exit
+// status. Serving POST requests holds no resources.
 func (b Bridge) Close() error {
 	if b.getter != nil {
-		b.getter.Close()
+		return b.getter.Close()
 	}
-	return b.local.Close()
+	return nil
 }
 
-// NewBridge constructs a new Bridge that starts a server on mux and dispatches
-// HTTP requests to it.  The server will run until the bridge is closed.
-//
-// Note that a bridge is not able to push calls or notifications from the
-// server back to the remote client. The bridge client is shared by multiple
-// active HTTP requests, and has no way to know which of the callers the push
-// should be forwarded to. You can enable push on the bridge server and set
-// hooks on the bridge client as usual, but the remote client will not see push
-// messages from the server.
+// NewBridge constructs a new Bridge that dispatches HTTP requests to a server
+// on mux. POST requests are served by [jrpc2.Server.ServeRequests] on the HTTP
+// request context; ServerOptions.NewContext does not apply. GET requests, if
+// enabled, are served by a [Getter] that runs until the bridge is closed.
+// The server cannot push calls or notifications to the remote client.
 func NewBridge(mux jrpc2.Assigner, opts *BridgeOptions) Bridge {
 	b := Bridge{
-		local: server.NewLocal(mux, &server.LocalOptions{
-			Client: opts.clientOptions(),
-			Server: opts.serverOptions(),
-		}),
+		srv:      jrpc2.NewServer(mux, opts.serverOptions()),
 		parseReq: opts.parseRequest(),
 	}
 	if pget := opts.parseGETRequest(); pget != nil {
@@ -208,7 +185,7 @@ func NewBridge(mux jrpc2.Assigner, opts *BridgeOptions) Bridge {
 // BridgeOptions are optional settings for a Bridge. A nil pointer is ready for
 // use and provides default values as described.
 type BridgeOptions struct {
-	// Options for the bridge client (default nil).
+	// Options for the client of the Getter for GET requests (default nil).
 	Client *jrpc2.ClientOptions
 
 	// Options for the bridge server (default nil).
@@ -258,19 +235,4 @@ func (o *BridgeOptions) parseGETRequest() func(*http.Request) (string, any, erro
 		return nil
 	}
 	return o.ParseGETRequest
-}
-
-// marshalError encodes an error response for an invalid request.
-func marshalError(req *jrpc2.ParsedRequest) ([]byte, error) {
-	v, err := json.Marshal(req.Error)
-	if err != nil {
-		return nil, err
-	}
-
-	// If the ID is empty, set the response ID to null.
-	id := req.ID
-	if id == "" {
-		id = "null"
-	}
-	return fmt.Appendf(nil, `{"jsonrpc":"2.0","id":%s,"error":%s}`, id, string(v)), nil
 }

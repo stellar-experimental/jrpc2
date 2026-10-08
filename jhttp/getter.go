@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/creachadair/jrpc2"
-	"github.com/creachadair/jrpc2/server"
+	"github.com/stellar-experimental/jrpc2"
+	"github.com/stellar-experimental/jrpc2/server"
 )
 
 // A Getter is a http.Handler that bridges GET requests to a JSON-RPC server.
