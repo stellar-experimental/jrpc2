@@ -1536,6 +1536,9 @@ func TestServer_ServeRequests_builtin(t *testing.T) {
 	if diff := cmp.Diff(testService.Names(), info.Methods); diff != "" {
 		t.Errorf("Methods (-want, +got):\n%s", diff)
 	}
+	if info.StartTime.IsZero() {
+		t.Error("StartTime is zero, want the time of the first call")
+	}
 
 	s = jrpc2.NewServer(testService, &jrpc2.ServerOptions{DisableBuiltin: true})
 	want := []string{`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found","data":"rpc.serverInfo"}}`}

@@ -10,7 +10,8 @@ import (
 
 // ServeRequests dispatches reqs to their handlers without a channel and
 // returns the responses in request order, omitting notifications unless their
-// Error field is set. The server need not be started.
+// Error field is set. The server need not be started; if no start time is
+// set, the first call sets it.
 //
 // Handler contexts derive from ctx; ServerOptions.NewContext is not used.
 // Requests run concurrently under the server's concurrency limit, the last on
@@ -26,6 +27,9 @@ func (s *Server) ServeRequests(ctx context.Context, reqs []*ParsedRequest) []*Re
 
 	ts := make(tasks, len(reqs))
 	s.mu.Lock()
+	if s.start.IsZero() {
+		s.start = time.Now().In(time.UTC) // as Start does
+	}
 	for i, req := range reqs {
 		t := &task{hreq: &Request{method: req.Method, params: req.Params}}
 		if req.ID != "" {
